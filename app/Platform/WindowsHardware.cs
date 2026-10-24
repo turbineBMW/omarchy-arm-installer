@@ -5,10 +5,10 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Win32;
-using SurfaceUsbCreator.Core;
-using SurfaceUsbCreator.Core.Hardware;
+using OmarchyArmInstaller.Core;
+using OmarchyArmInstaller.Core.Hardware;
 
-namespace SurfaceUsbCreator.Platform;
+namespace OmarchyArmInstaller.Platform;
 
 /// Reads a hardware report's raw material from Windows: SMBIOS and ACPI
 /// through the firmware-table API (plus the registry, which keeps every SSDT

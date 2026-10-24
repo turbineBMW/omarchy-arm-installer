@@ -1,4 +1,4 @@
-namespace SurfaceUsbCreator.Core.Hardware;
+namespace OmarchyArmInstaller.Core.Hardware;
 
 /// One ACPI table as the firmware handed it to the OS.
 public sealed record AcpiTable(string Signature, byte[] Data);

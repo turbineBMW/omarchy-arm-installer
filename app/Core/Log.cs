@@ -1,7 +1,7 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-namespace SurfaceUsbCreator.Core;
+namespace OmarchyArmInstaller.Core;
 
 /// One log file per run, for the "Open log" button and for issue reports:
 /// every step, every PowerShell call with its full output, and every error.
@@ -10,8 +10,8 @@ public static class Log
     static readonly object Gate = new();
 
     public static string Folder { get; } = OperatingSystem.IsWindows()
-        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SurfaceUsbCreator", "Logs")
-        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state", "surface-usb-creator", "logs");
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OmarchyArmInstaller", "Logs")
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state", "omarchy-arm-installer", "logs");
 
     public static string FilePath { get; } = System.IO.Path.Combine(Folder, $"creator-{DateTime.Now:yyyyMMdd-HHmmss}.log");
 
@@ -23,7 +23,7 @@ public static class Log
         try
         {
             Directory.CreateDirectory(Folder);
-            Write($"Surface Pro 11 for Omarchy USB Creator {Version}\n" +
+            Write($"Omarchy Arm Installer {Version}\n" +
                   $"{RuntimeInformation.OSDescription} ({RuntimeInformation.OSArchitecture}), .NET {Environment.Version}");
         }
         catch

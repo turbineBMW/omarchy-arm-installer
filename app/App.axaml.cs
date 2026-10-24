@@ -1,9 +1,9 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
-using SurfaceUsbCreator.Platform;
+using OmarchyArmInstaller.Platform;
 
-namespace SurfaceUsbCreator;
+namespace OmarchyArmInstaller;
 
 public partial class App : Application
 {

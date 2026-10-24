@@ -1,14 +1,6 @@
-namespace SurfaceUsbCreator.Platform;
+namespace OmarchyArmInstaller.Platform;
 
-public sealed record MachineInfo(string Model, string Sku, bool IsArm64, bool IsAdministrator)
-{
-    public bool IsSurfacePro11 => Model.Contains("Surface Pro", StringComparison.OrdinalIgnoreCase) &&
-                                  (Model.Contains("11th", StringComparison.OrdinalIgnoreCase) || Sku.Contains("11th", StringComparison.OrdinalIgnoreCase));
-
-    /// The Snapdragon X Elite OLED model is the one tested; the LCD and X Plus
-    /// models use other device trees.
-    public bool IsTestedModel => Sku.Equals("Surface_Pro_11th_Edition_2076", StringComparison.OrdinalIgnoreCase);
-}
+public sealed record MachineInfo(string Model, string Sku, bool IsArm64, bool IsAdministrator);
 
 public sealed record UsbDisk(int Number, string Model, long Size, string Serial)
 {

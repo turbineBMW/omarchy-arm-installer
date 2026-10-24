@@ -1,4 +1,4 @@
-namespace SurfaceUsbCreator.Core.Hardware;
+namespace OmarchyArmInstaller.Core.Hardware;
 
 /// The few things a report needs from a display's EDID.
 public static class Edid

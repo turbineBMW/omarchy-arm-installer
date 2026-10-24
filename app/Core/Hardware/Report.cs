@@ -4,7 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace SurfaceUsbCreator.Core.Hardware;
+namespace OmarchyArmInstaller.Core.Hardware;
 
 public sealed record FirmwareFile(string Name, long Size, string Sha256);
 
@@ -53,7 +53,7 @@ public static class ReportBuilder
 
     /// Files in a driver package that are drivers or Windows plumbing rather
     /// than firmware the hardware loads.
-    static readonly HashSet<string> NotFirmware = new(StringComparer.OrdinalIgnoreCase)
+    public static readonly HashSet<string> NotFirmware = new(StringComparer.OrdinalIgnoreCase)
     {
         ".sys", ".dll", ".exe", ".cat", ".inf", ".pnf", ".mui", ".cpl", ".ocx", ".msi", ".ps1", ".bat", ".cmd",
         ".winmd", ".pdb", ".chm", ".ico", ".lnk",

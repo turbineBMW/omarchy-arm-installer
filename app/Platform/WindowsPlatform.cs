@@ -5,11 +5,11 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
-using SurfaceUsbCreator.Core;
+using OmarchyArmInstaller.Core;
 
-namespace SurfaceUsbCreator.Platform;
+namespace OmarchyArmInstaller.Platform;
 
-/// The real thing, on the Surface's own Windows. Disk, partition and BitLocker
+/// The real thing, on the laptop's own Windows. Disk, partition and BitLocker
 /// work goes through Windows' storage and CIM cmdlets; only the raw image write
 /// is done here directly.
 [SupportedOSPlatform("windows")]

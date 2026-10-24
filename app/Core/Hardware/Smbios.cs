@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace SurfaceUsbCreator.Core.Hardware;
+namespace OmarchyArmInstaller.Core.Hardware;
 
 /// One SMBIOS structure: its formatted area (header included) and its strings.
 public sealed class SmbiosStructure

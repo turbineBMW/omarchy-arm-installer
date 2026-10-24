@@ -1,11 +1,11 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:local="using:SurfaceUsbCreator"
-        xmlns:core="using:SurfaceUsbCreator.Core"
-        xmlns:platform="using:SurfaceUsbCreator.Platform"
-        x:Class="SurfaceUsbCreator.MainWindow"
+        xmlns:local="using:OmarchyArmInstaller"
+        xmlns:core="using:OmarchyArmInstaller.Core"
+        xmlns:platform="using:OmarchyArmInstaller.Platform"
+        x:Class="OmarchyArmInstaller.MainWindow"
         x:DataType="local:MainViewModel"
-        Title="Omarchy · USB creator and hardware report"
+        Title="Omarchy Arm Installer"
         Width="920" Height="640" MinWidth="820" MinHeight="580"
         WindowStartupLocation="CenterScreen">
 
@@ -94,7 +94,7 @@
           <Button Classes="choice" Click="StartInstall">
             <StackPanel Spacing="6">
               <TextBlock Text="Make an Omarchy USB stick" FontWeight="Bold" />
-              <TextBlock Classes="dim body" Text="For the Surface Pro 11: a stick that installs Omarchy and carries this Surface's firmware, so BitLocker can stay on and Windows can stay next to it." />
+              <TextBlock Classes="dim body" Text="A stick that installs Omarchy on this laptop and carries its firmware from Windows, so BitLocker can stay on and Windows can stay next to Omarchy." />
             </StackPanel>
           </Button>
           <Button Classes="choice" Click="StartReport">
@@ -151,10 +151,15 @@
           <TextBlock Classes="dim body" Text="{Binding ReportLeftOut}" />
         </StackPanel>
 
-        <!-- This Surface -->
-        <StackPanel Classes="step" IsVisible="{Binding IsSurfaceStep}">
-          <TextBlock Classes="body" Text="This makes a USB stick that installs Omarchy on this Surface. It carries the firmware Linux needs from this Surface's own Windows, so BitLocker can stay on, and Windows can stay next to Omarchy or make way for it." />
-          <ItemsControl ItemsSource="{Binding SurfaceChecks}">
+        <!-- This computer -->
+        <StackPanel Classes="step" IsVisible="{Binding IsMachineStep}">
+          <TextBlock Classes="body" Text="This makes a USB stick that installs Omarchy on this computer. It carries the firmware Linux needs from this computer's own Windows, so BitLocker can stay on, and Windows can stay next to Omarchy or make way for it." />
+          <StackPanel Spacing="6" IsVisible="{Binding Busy}">
+            <TextBlock Text="{Binding ProgressText}" Classes="dim" />
+            <ProgressBar IsIndeterminate="True" />
+          </StackPanel>
+          <TextBlock Text="{Binding MachineName}" FontWeight="Bold" TextWrapping="Wrap" />
+          <ItemsControl ItemsSource="{Binding MachineChecks}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="local:Check">
                 <Grid ColumnDefinitions="22,*" RowDefinitions="Auto,Auto" Margin="0,4">
@@ -166,16 +171,19 @@
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
-          <TextBlock Classes="body" Foreground="{StaticResource WarnBrush}" Text="{Binding SurfaceNote}" />
+          <TextBlock Classes="body" Text="{Binding MachineNote}" IsVisible="{Binding HasMachineNote}"
+                     Classes.warn="{Binding MachineUnsupported}" />
+          <Button Classes="primary" Content="Share a hardware report instead" Click="SwitchToReport"
+                  IsVisible="{Binding MachineUnsupported}" HorizontalAlignment="Left" />
         </StackPanel>
 
         <!-- Firmware -->
         <StackPanel Classes="step" IsVisible="{Binding IsFirmwareStep}">
-          <TextBlock Classes="body" Text="Sound, the sensors, the battery gauge and graphics need firmware that only Windows has. These files are copied from this Surface onto the stick, and only there: nothing is downloaded or shared." />
+          <TextBlock Classes="body" Text="Graphics, sound, sensors, Wi-Fi and the battery gauge need firmware that only Windows has. These files are copied from this computer's drivers onto the stick, and only there: nothing is uploaded or shared." />
           <ItemsControl ItemsSource="{Binding Firmware}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="core:FirmwarePackage">
-                <Border Classes="panel" Margin="0,0,0,8">
+                <Border Classes="panel" Margin="0,0,0,6">
                   <StackPanel Spacing="4">
                     <StackPanel Orientation="Horizontal" Spacing="10">
                       <TextBlock Text="&#xf00c;" Classes="ok" IsVisible="{Binding Complete}" />
@@ -191,9 +199,24 @@
           <TextBlock Classes="dim body" FontSize="12" Text="{Binding FirmwareSummary}" />
         </StackPanel>
 
+        <!-- Extras -->
+        <StackPanel Classes="step" IsVisible="{Binding IsExtrasStep}">
+          <TextBlock Text="{Binding Recipe.Name}" FontWeight="Bold" />
+          <TextBlock Classes="body" Text="{Binding Recipe.Description}" />
+          <TextBlock Classes="body" Text="{Binding RecipeFeatures}" />
+          <Border Classes="panel">
+            <TextBlock Classes="dim body" FontSize="12" Text="{Binding RecipeSource}" />
+          </Border>
+          <TextBlock Classes="dim body" FontSize="12" Text="{Binding RecipeDownload}" />
+          <CheckBox IsChecked="{Binding UseRecipe}" Content="Install these extras with Omarchy" />
+          <TextBlock Classes="body warn" IsVisible="{Binding StickTooSmall}"
+                     Text="The firmware and the extras together are more than the stick's firmware partition holds." />
+          <TextBlock Classes="dim body" Text="They come from their maintainer, not from Omarchy, and keep updating from that repository until Omarchy has the same. Leave them out to install Omarchy as it comes." />
+        </StackPanel>
+
         <!-- Installer -->
         <StackPanel Classes="step" IsVisible="{Binding IsInstallerStep}">
-          <TextBlock Classes="body" Text="The Omarchy installer for the Surface Pro 11: Omarchy itself, with this Surface's kernel, fixes and extras built in." />
+          <TextBlock Classes="body" Text="The Omarchy installer for Arm laptops: Omarchy as it comes, able to read the firmware and extras this tool puts on the stick." />
           <Border Classes="panel">
             <DockPanel>
               <Button DockPanel.Dock="Right" Classes="primary" Content="Download" Click="Download" IsEnabled="{Binding CanDownload}" />
@@ -255,7 +278,7 @@
           <Border Classes="panel" IsVisible="{Binding BitLocker.On}" BorderBrush="{StaticResource WarnBrush}">
             <StackPanel Spacing="10">
               <TextBlock Text="BitLocker is on" FontWeight="Bold" Foreground="{StaticResource WarnBrush}" />
-              <TextBlock Classes="body" Text="Omarchy needs Secure Boot off, and Windows may then ask for its recovery key. The creator pauses BitLocker for the next three starts, but keep the key safe in case: save it somewhere other than this Surface and the stick." />
+              <TextBlock Classes="body" Text="Omarchy needs Secure Boot off, and Windows may then ask for its recovery key. The installer pauses BitLocker for the next three starts, but keep the key safe in case: save it somewhere other than this computer and the stick." />
               <SelectableTextBlock Text="{Binding RecoveryKeys}" FontSize="16" />
               <Button Content="Save the recovery key…" Click="SaveKey" HorizontalAlignment="Left" />
               <CheckBox IsChecked="{Binding KeySaved}" Content="I have saved my recovery key" />
@@ -290,12 +313,12 @@
           <TextBlock Classes="body" Text="The stick is ready. Leave it plugged in, then:" />
           <Border Classes="panel">
             <StackPanel Spacing="12">
-              <TextBlock Classes="body" Text="1  Turn Secure Boot off: shut down, hold Volume Up and press Power. In Surface UEFI, open Security, set Secure Boot to Disabled, then Exit and restart now." />
-              <TextBlock Classes="body" Text="2  Start from the stick: shut down, hold Volume Down and press Power, and let go when the Surface logo shows." />
+              <TextBlock Classes="body" Text="{Binding SecureBootText, StringFormat='1  {0}'}" />
+              <TextBlock Classes="body" Text="{Binding BootFromUsbText, StringFormat='2  {0}'}" />
               <TextBlock Classes="body" Text="3  In the installer, choose the free space to keep Windows, or the whole disk to replace it." />
             </StackPanel>
           </Border>
-          <TextBlock Classes="dim body" Text="Omarchy reads this Surface's firmware from the stick while it installs; nothing else is needed." />
+          <TextBlock Classes="dim body" Text="Omarchy reads this computer's firmware, and any extras, from the stick while it installs; nothing else is needed." />
         </StackPanel>
       </StackPanel>
     </ScrollViewer>

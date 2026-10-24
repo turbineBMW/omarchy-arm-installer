@@ -1,11 +1,11 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using SurfaceUsbCreator.Core;
-using SurfaceUsbCreator.Core.Hardware;
-using SurfaceUsbCreator.Platform;
+using OmarchyArmInstaller.Core;
+using OmarchyArmInstaller.Core.Hardware;
+using OmarchyArmInstaller.Platform;
 
-namespace SurfaceUsbCreator;
+namespace OmarchyArmInstaller;
 
 public sealed record Check(string Text, bool Ok, string Detail = "")
 {
@@ -23,13 +23,14 @@ public sealed record LogLine(string Text, bool Ok);
 
 public sealed class MainViewModel : INotifyPropertyChanged
 {
-    public enum Steps { Start, Surface, Firmware, Installer, Stick, Windows, Create, Done, Collect, Share }
+    public enum Steps { Start, Machine, Firmware, Extras, Installer, Stick, Windows, Create, Done, Collect, Share }
 
     static readonly Dictionary<Steps, string> Titles = new()
     {
         [Steps.Start] = "What would you like to do?",
-        [Steps.Surface] = "This Surface",
+        [Steps.Machine] = "This computer",
         [Steps.Firmware] = "Firmware",
+        [Steps.Extras] = "Extras",
         [Steps.Installer] = "Installer",
         [Steps.Stick] = "USB stick",
         [Steps.Windows] = "Windows",
@@ -40,7 +41,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     };
 
     /// The two things the tool does, each its own run of steps.
-    static readonly Steps[] InstallFlow = [Steps.Surface, Steps.Firmware, Steps.Installer, Steps.Stick, Steps.Windows, Steps.Create, Steps.Done];
+    static readonly Steps[] InstallFlow = [Steps.Machine, Steps.Firmware, Steps.Installer, Steps.Stick, Steps.Windows, Steps.Create, Steps.Done];
+    /// With a recipe for this model, its extras get a step of their own.
+    static readonly Steps[] RecipeFlow = [Steps.Machine, Steps.Firmware, Steps.Extras, Steps.Installer, Steps.Stick, Steps.Windows, Steps.Create, Steps.Done];
     static readonly Steps[] ReportFlow = [Steps.Collect, Steps.Share];
 
     readonly IPlatform platform;
@@ -80,8 +83,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     public bool IsStartStep => Current == Steps.Start;
-    public bool IsSurfaceStep => Current == Steps.Surface;
+    public bool IsMachineStep => Current == Steps.Machine;
     public bool IsFirmwareStep => Current == Steps.Firmware;
+    public bool IsExtrasStep => Current == Steps.Extras;
     public bool IsInstallerStep => Current == Steps.Installer;
     public bool IsStickStep => Current == Steps.Stick;
     public bool IsWindowsStep => Current == Steps.Windows;
@@ -91,7 +95,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsShareStep => Current == Steps.Share;
     public string StepTitle => Titles[Current];
     public bool IsReport => flow == ReportFlow;
-    public string Subtitle => IsStartStep ? "for Windows on Arm laptops" : IsReport ? "hardware report" : "for Surface Pro 11";
+    public string Subtitle => IsStartStep ? "for Windows on Arm laptops" : IsReport ? "hardware report" : "installer";
 
     public bool CanGoBack => !IsStartStep && !Busy && Current switch
     {
@@ -101,8 +105,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     };
     public bool CanGoNext => !Busy && Current switch
     {
-        Steps.Surface => SurfaceOk,
-        Steps.Firmware => FirmwareOk,
+        Steps.Machine => MachineOk,
+        Steps.Firmware => FirmwareOk && FirmwareSize <= StickRoom,
+        Steps.Extras => !UseRecipe || (RecipePackages is not null && !StickTooSmall),
         Steps.Installer => ImagePath is not null,
         Steps.Stick => SelectedDisk is not null,
         Steps.Windows => (!BitLocker.On || KeySaved) && !(AlreadyDone && DiskFreeLow),
@@ -127,51 +132,124 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string? Error { get => error; set { error = value; Changed(); Changed(nameof(HasError)); } }
     public bool HasError => !string.IsNullOrEmpty(Error);
 
-    // ---------- This Surface ----------
+    // ---------- This computer ----------
 
-    public ObservableCollection<Check> SurfaceChecks { get; } = [];
-    public bool SurfaceOk => SurfaceChecks.Count > 0 && SurfaceChecks.All(c => c.Ok);
-    public string SurfaceNote { get; private set; } = "";
+    public ObservableCollection<Check> MachineChecks { get; } = [];
+    public bool MachineOk => MachineChecks.Count > 0 && MachineChecks.All(c => c.Ok);
+    public bool MachineUnsupported { get; private set; }
+    public string MachineName { get; private set; } = "";
+    public string MachineNote { get; private set; } = "";
+    public bool HasMachineNote => MachineNote.Length > 0;
 
-    public void CheckSurface()
+    CollectedHardware? hardware;
+    public Recipe? Recipe { get; private set; }
+    public KnownModel? Model { get; private set; }
+
+    public async Task CheckMachineAsync()
     {
-        SurfaceChecks.Clear();
-        try
+        MachineChecks.Clear();
+        MachineNote = "";
+        MachineUnsupported = false;
+        await RunAsync(async ct =>
         {
+            ProgressText = "Reading this computer";
             var m = platform.GetMachine();
-            SurfaceChecks.Add(new Check("Surface Pro 11", m.IsSurfacePro11, $"{m.Model} ({m.Sku})"));
-            SurfaceChecks.Add(new Check("Windows on Arm", m.IsArm64));
-            SurfaceChecks.Add(new Check("Running as administrator", m.IsAdministrator,
-                m.IsAdministrator ? "" : "Right-click the creator and choose Run as administrator"));
-            Log.Info($"Machine: {m.Model} ({m.Sku}), arm64 {m.IsArm64}, administrator {m.IsAdministrator}");
-            SurfaceNote = m.IsSurfacePro11 && !m.IsTestedModel
-                ? "Only the Snapdragon X Elite model with the OLED screen has been tested. Others may not boot."
-                : "";
-        }
-        catch (Exception e)
-        {
-            Log.Error("reading the model", e);
-            SurfaceChecks.Add(new Check("Reading this computer's model", false, e.Message));
-        }
-        ChangedAll();
+            hardware = await platform.Hardware.CollectAsync(new Progress<string>(t => { ProgressText = t; Changed(nameof(ProgressText)); }), ct);
+            var identity = hardware.Smbios is { Length: > 0 } table ? Smbios.Identity(Smbios.Parse(table)) : null;
+            var panel = hardware.Displays.OrderByDescending(d => d.Internal).Select(d => Edid.PanelId(d.Edid)).FirstOrDefault();
+            var chids = identity is null ? [] : Chid.Calculate(identity, panel).Select(c => c.Value).ToList();
+            Recipe = Recipes.For(chids);
+            Model = Recipes.ModelFor(chids);
+            MachineName = identity is null ? m.Model
+                : string.Join(" ", new[] { identity.Manufacturer, identity.ProductName }.Where(x => !string.IsNullOrWhiteSpace(x)))
+                  + (identity.Sku is { } sku ? $"  ·  {sku}" : "");
+            Log.Info($"Machine: {MachineName}, arm64 {m.IsArm64}, administrator {m.IsAdministrator}, " +
+                     $"device tree {Model?.Compatible ?? "none"}, recipe {Recipe?.Id ?? "none"}, CHIDs {string.Join(" ", chids)}");
+
+            MachineChecks.Add(new Check("Windows on Arm", m.IsArm64));
+            MachineChecks.Add(new Check("Running as administrator", m.IsAdministrator,
+                m.IsAdministrator ? "" : "Right-click the installer and choose Run as administrator"));
+            var supported = Model is not null || Recipe is not null;
+            MachineChecks.Add(new Check("Linux knows this model", supported,
+                supported ? $"Device tree {Model?.Compatible ?? Recipe!.Device}" : "No device tree for it yet"));
+            MachineUnsupported = !supported;
+
+            MachineNote = !supported
+                ? "Omarchy cannot start on this model yet: Linux needs a device tree for it, written by hand. " +
+                  "Share a hardware report, and the people who write them have what they need."
+                : Recipe is { } r
+                    ? $"{r.Name} are available for this model, from {r.Maintainer.Name}." +
+                      (r.IsTested ? "" : " They have not been tested on it yet.")
+                    : "Omarchy installs as it comes, with this computer's firmware. Not every part may work yet.";
+            flow = Recipe is null ? InstallFlow : RecipeFlow;
+            UseRecipe = Recipe is not null;
+        });
+        Current = Current; // the steps may have changed
     }
+
+    public async Task SwitchToReportAsync() => await StartAsync(report: true);
 
     // ---------- Firmware ----------
 
+    /// The stick's OMARCHY_FW partition, less what FAT32 and slack take.
+    const long StickRoom = 1000L * 1000 * 1000;
+
     public ObservableCollection<FirmwarePackage> Firmware { get; } = [];
     public bool FirmwareOk => Firmware.Count > 0 && Firmware.All(p => p.Complete);
-    public string FirmwareSummary => Firmware.Count == 0 ? "" :
-        $"{Firmware.Sum(p => p.Found.Count)} files, {Firmware.Sum(p => p.Found.Sum(f => f.Size)) / 1e6:0.0} MB from {platform.DriverStore}";
+    public long FirmwareSize => FirmwareCollector.Size(Firmware);
+    public string FirmwareSummary => Firmware.Count == 0 ? "No firmware found in " + platform.DriverStore :
+        $"{Firmware.Sum(p => p.Found.Count)} files, {FirmwareSize / 1e6:0.0} MB from {platform.DriverStore}";
 
     public void FindFirmware()
     {
         Firmware.Clear();
-        foreach (var p in FirmwareCollector.Find(platform.DriverStore))
+        foreach (var p in FirmwareCollector.Find(platform.DriverStore, hardware?.Devices ?? [], Recipe))
         {
             Firmware.Add(p);
-            Log.Info($"Firmware {p.Pattern}: {(p.Complete ? "complete" : "INCOMPLETE")}, " +
-                     string.Join(", ", p.Found.Select(f => $"{f.Folder}/{f.Name} ({f.Size})").Take(6)) +
+            Log.Info($"Firmware {p.Folder} ({p.Label}): {(p.Complete ? "complete" : "INCOMPLETE")}, " +
+                     string.Join(", ", p.Found.Select(f => $"{f.Name} ({f.Size})").Take(6)) +
                      (p.Found.Count > 6 ? $" and {p.Found.Count - 6} more" : ""));
+        }
+        ChangedAll();
+    }
+
+    // ---------- Extras ----------
+
+    bool useRecipe;
+    public bool UseRecipe { get => useRecipe; set { useRecipe = value; ChangedAll(); } }
+    byte[]? recipeDatabase;
+    public List<RepoPackage>? RecipePackages { get; private set; }
+    public long RecipeSize => UseRecipe ? RecipePackages?.Sum(p => p.Size) ?? 0 : 0;
+    public string RecipeFeatures => Recipe is null ? "" : string.Join("\n", Recipe.Features.Select(f => $"\u00b7 {f}"));
+    public string RecipeSource => Recipe is null ? "" :
+        $"From {Recipe.Maintainer.Name}{(Recipe.Maintainer.Github is { } gh ? $" (github.com/{gh})" : "")}\n" +
+        $"{Recipe.Repo.ServerFor(PacmanRepo.Arch)}\n" +
+        $"Signed with key {string.Join(" ", Recipe.Repo.KeyFingerprint.Chunk(4).Select(c => new string(c)))}";
+    public string RecipeDownload => RecipePackages is null ? "Looking at the extras' repository…" :
+        $"{RecipePackages.Count} packages, {RecipePackages.Sum(p => p.Size) / 1e6:0} MB, carried on the stick: " +
+        string.Join(", ", RecipePackages.Select(p => p.Name));
+    public bool StickTooSmall => FirmwareSize + RecipeSize > StickRoom;
+
+    // ---------- Next steps ----------
+
+    public string SecureBootText => Recipe?.SecureBoot ??
+        "Turn Secure Boot off in this computer's firmware settings (often F2 or Del as it starts, or Windows' Advanced startup > UEFI Firmware Settings).";
+    public string BootFromUsbText => Recipe?.BootFromUsb ??
+        "Start from the stick: choose it in the firmware's boot menu (often F12 as it starts), or put it first in the boot order.";
+
+    public async Task LoadRecipeAsync()
+    {
+        if (Recipe is null || RecipePackages is not null) return;
+        try
+        {
+            (recipeDatabase, var packages) = await PacmanRepo.ReadAsync(Recipe.Repo, CancellationToken.None);
+            RecipePackages = packages;
+            Log.Info($"Recipe {Recipe.Id}: {string.Join(", ", packages.Select(p => $"{p.FileName} ({p.Size})"))}");
+        }
+        catch (Exception e)
+        {
+            Log.Error($"reading the {Recipe.Repo.Name} repository", e);
+            Error = $"Could not reach the extras' repository ({e.Message}). Leave the extras out, or try again later.";
         }
         ChangedAll();
     }
@@ -303,22 +381,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     public string RecoveryKeyFileText =>
-        "BitLocker recovery key for this Surface's Windows (C:)\n" +
-        $"Saved by the Surface Pro 11 for Omarchy USB creator on {DateTime.Now:yyyy-MM-dd HH:mm}\n\n" +
+        "BitLocker recovery key for this computer's Windows (C:)\n" +
+        $"Saved by the Omarchy Arm Installer on {DateTime.Now:yyyy-MM-dd HH:mm}\n\n" +
         string.Join("\n", BitLocker.RecoveryKeys.Select(k => $"Key ID {k.Id}\nRecovery key {k.Password}\n")) +
         "\nWindows asks for this if it starts after the firmware's security settings change.\n" +
-        "Keep it somewhere other than this Surface and the USB stick.\n";
+        "Keep it somewhere other than this computer and the USB stick.\n";
 
     // ---------- Create ----------
 
     public ObservableCollection<LogLine> CreateLog { get; } = [];
     public string Summary => SelectedDisk is null ? "" :
-        $"Erase {SelectedDisk.Description} and write {Path.GetFileName(ImagePath)} to it, with this Surface's firmware.\n" +
+        $"Erase {SelectedDisk.Description} and write {Path.GetFileName(ImagePath)} to it, with this computer's firmware" +
+        (UseRecipe && Recipe is not null ? $" and the {Recipe.Name}" : "") + ".\n" +
         Plan switch
         {
             WindowsPlan.Keep => $"Shrink C: by {ShrinkGb:0} GB so Omarchy installs next to Windows.",
             WindowsPlan.AlreadyDone => "Leave C: as it is: Omarchy installs into the space you made.",
-            _ => "Leave Windows as it is; Omarchy's installer will erase this Surface's disk.",
+            _ => "Leave Windows as it is; Omarchy's installer will erase this computer's disk.",
         } +
         (WindowsStays && BitLocker.On ? "\nPause BitLocker for the next 3 starts, while Secure Boot is turned off and Omarchy is installed." : "");
 
@@ -350,7 +429,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         CreateLog.Clear();
         await RunAsync(async ct =>
         {
-            Log.Info($"Creating: disk {disk.Number} ({disk.Model}, {disk.Size} bytes), image {image}, plan {Plan}, shrink {ShrinkGb} GB, BitLocker {(BitLocker.On ? "on" : "off")}");
+            Log.Info($"Creating: disk {disk.Number} ({disk.Model}, {disk.Size} bytes), image {image}, plan {Plan}, shrink {ShrinkGb} GB, BitLocker {(BitLocker.On ? "on" : "off")}, recipe {(UseRecipe ? Recipe?.Id : "none")}");
+            // Download first: a failed download must not leave a half-made stick.
+            var recipe = UseRecipe ? Recipe : null;
+            var recipeFolder = recipe is null ? null : Path.Combine(platform.DownloadFolder, "omarchy-recipes", recipe.Id);
+            if (recipe is not null)
+            {
+                if (RecipePackages is null || recipeDatabase is null) throw new InvalidOperationException("The extras' repository was not read; go Back to Extras.");
+                Note($"Downloading the {recipe.Name}");
+                ProgressText = "Downloading and checking the extras";
+                await PacmanRepo.DownloadAsync(recipe.Repo, recipeDatabase, RecipePackages, Path.Combine(recipeFolder!, "repo"),
+                    new Progress<double>(p => Progress = p), ct);
+                Done($"{recipe.Name} downloaded and checked");
+            }
             // A retry after a failure must not shrink C: a second time.
             if (Plan == WindowsPlan.Keep && !shrunk)
             {
@@ -371,15 +462,33 @@ public sealed class MainViewModel : INotifyPropertyChanged
             await platform.WriteImageAsync(image, disk, new Progress<double>(p => Progress = p), ct);
             Done("Installer written and read back intact");
 
-            Note("Copying this Surface's firmware onto the stick");
+            Note("Copying this computer's firmware onto the stick");
             var volume = await platform.MountFirmwareVolumeAsync(disk, ct);
             await Task.Run(() => FirmwareCollector.CopyTo(Firmware, volume), ct);
             Done($"{Firmware.Sum(p => p.Found.Count)} firmware files copied to {volume}");
+
+            if (recipe is not null)
+            {
+                Note($"Copying the {recipe.Name} onto the stick");
+                await Task.Run(() => CopyRecipe(recipe, recipeFolder!, Path.Combine(volume, "recipe")), ct);
+                Done($"{recipe.Name} copied; the installer adds them");
+            }
 
             await platform.EjectAsync(disk, ct);
             Done("The stick is ready");
         });
         if (!HasError) Current = Steps.Done;
+    }
+
+    /// The stick's recipe folder, as the installer reads it: recipe.json,
+    /// key.asc, and the repository in repo/.
+    static void CopyRecipe(Recipe recipe, string downloaded, string destination)
+    {
+        Directory.CreateDirectory(Path.Combine(destination, "repo"));
+        File.WriteAllText(Path.Combine(destination, "recipe.json"), recipe.Json);
+        File.WriteAllText(Path.Combine(destination, "key.asc"), recipe.Key);
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(downloaded, "repo")))
+            File.Copy(file, Path.Combine(destination, "repo", Path.GetFileName(file)), overwrite: true);
     }
 
     void Note(string text) => Lines.Add(new LogLine(text, false));
@@ -528,7 +637,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         get
         {
-            var machine = SurfaceChecks.FirstOrDefault()?.Detail ?? "";
+            var machine = MachineName;
             var title = $"USB creator: {Error}";
             if (title.Length > 120) title = title[..117] + "...";
             var body =
@@ -570,8 +679,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Log.Info($"Step: {StepTitle}");
         switch (Current)
         {
-            case Steps.Surface: CheckSurface(); break;
+            case Steps.Machine: await CheckMachineAsync(); break;
             case Steps.Firmware: FindFirmware(); break;
+            case Steps.Extras: await LoadRecipeAsync(); break;
             case Steps.Installer: if (release is null) await FindReleaseAsync(); break;
             case Steps.Stick: await ListDisksAsync(); break;
             case Steps.Windows: await CheckWindowsAsync(); break;

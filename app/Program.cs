@@ -1,6 +1,6 @@
 using Avalonia;
 
-namespace SurfaceUsbCreator;
+namespace OmarchyArmInstaller;
 
 static class Program
 {

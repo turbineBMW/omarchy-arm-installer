@@ -2,7 +2,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
 
-namespace SurfaceUsbCreator.Core;
+namespace OmarchyArmInstaller.Core;
 
 /// An installer image on GitHub: parts that join into one ISO, and its SHA-256.
 public sealed record ReleasedImage(string Tag, string IsoName, IReadOnlyList<(string Name, string Url, long Size)> Parts,
@@ -16,7 +16,7 @@ public sealed record ReleasedImage(string Tag, string IsoName, IReadOnlyList<(st
 /// .part-ab, ... pieces beside a .sha256 of the whole image.
 public static class ImageSource
 {
-    public const string Repository = "turbineBMW/surface-pro-11-omarchy";
+    public const string Repository = "turbineBMW/omarchy-arm-installer";
     const string TagPrefix = "installer-";
 
     static readonly HttpClient Http = CreateClient();
@@ -24,7 +24,7 @@ public static class ImageSource
     static HttpClient CreateClient()
     {
         var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("SurfaceUsbCreator", "1.0"));
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("OmarchyArmInstaller", "1.0"));
         return client;
     }
 

@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace SurfaceUsbCreator.Core.Hardware;
+namespace OmarchyArmInstaller.Core.Hardware;
 
 public sealed record ChidValue(string Type, string Fields, Guid Value);
 

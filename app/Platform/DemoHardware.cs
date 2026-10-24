@@ -1,12 +1,12 @@
-using SurfaceUsbCreator.Core.Hardware;
+using OmarchyArmInstaller.Core.Hardware;
 
-namespace SurfaceUsbCreator.Platform;
+namespace OmarchyArmInstaller.Platform;
 
 /// A hardware report's raw material read from Linux, for developing the
 /// report away from Windows: the SMBIOS table (root-only in sysfs, so
-/// SURFACE_CREATOR_DMI can point at a copy), ACPI tables where the machine
+/// OMARCHY_DEMO_DMI can point at a copy), ACPI tables where the machine
 /// booted with them, EDIDs from DRM, and stand-in devices for the driver
-/// store SURFACE_CREATOR_DRIVER_STORE points at.
+/// store OMARCHY_DEMO_DRIVER_STORE points at.
 public sealed class DemoHardware : IHardwareSource
 {
     public Task<CollectedHardware> CollectAsync(IProgress<string> status, CancellationToken ct) => Task.Run(async () =>
@@ -15,7 +15,7 @@ public sealed class DemoHardware : IHardwareSource
 
         status.Report("Reading the SMBIOS table");
         await Task.Delay(300, ct);
-        var dmi = Environment.GetEnvironmentVariable("SURFACE_CREATOR_DMI") ?? "/sys/firmware/dmi/tables/DMI";
+        var dmi = Environment.GetEnvironmentVariable("OMARCHY_DEMO_DMI") ?? "/sys/firmware/dmi/tables/DMI";
         byte[]? smbios = null;
         (byte, byte, byte) version = (3, 0, 0);
         try
@@ -33,7 +33,7 @@ public sealed class DemoHardware : IHardwareSource
         status.Report("Reading the ACPI tables");
         await Task.Delay(300, ct);
         var acpi = new List<AcpiTable>();
-        var acpiDir = Environment.GetEnvironmentVariable("SURFACE_CREATOR_ACPI") ?? "/sys/firmware/acpi/tables";
+        var acpiDir = Environment.GetEnvironmentVariable("OMARCHY_DEMO_ACPI") ?? "/sys/firmware/acpi/tables";
         if (Directory.Exists(acpiDir))
         {
             foreach (var file in Directory.EnumerateFiles(acpiDir, "*", SearchOption.AllDirectories).Order())
@@ -81,7 +81,7 @@ public sealed class DemoHardware : IHardwareSource
     }, ct);
 
     /// A few devices shaped like Windows' own, including ones the report must
-    /// leave out or redact, and one per Qualcomm package in the driver store.
+    /// leave out or redact, and one per package in the driver store.
     static List<DeviceInfo> StandIns()
     {
         var list = new List<DeviceInfo>
@@ -97,10 +97,10 @@ public sealed class DemoHardware : IHardwareSource
             new() { InstanceId = @"PCI\VEN_17CB&DEV_1107&SUBSYS_00000000&REV_01\4&3B5C6D7E&0&0010", Name = "Qualcomm FastConnect 7800 Wi-Fi 7",
                     Class = "Net", LocationPaths = [@"PCIROOT(0)#PCI(0000)#PCI(0000)", @"ACPI(_SB_)#ACPI(PCI4)#ACPI(RP1_)#ACPI(WLAN)"] },
         };
-        var store = Environment.GetEnvironmentVariable("SURFACE_CREATOR_DRIVER_STORE");
+        var store = Environment.GetEnvironmentVariable("OMARCHY_DEMO_DRIVER_STORE");
         if (store is not null && Directory.Exists(store))
         {
-            foreach (var folder in Directory.EnumerateDirectories(store, "qc*").Order().Take(40))
+            foreach (var folder in Directory.EnumerateDirectories(store).Order().Take(60))
             {
                 var inf = Path.GetFileName(folder).Split('_')[0];
                 list.Add(new DeviceInfo

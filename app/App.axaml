@@ -1,6 +1,6 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             x:Class="SurfaceUsbCreator.App"
+             x:Class="OmarchyArmInstaller.App"
              RequestedThemeVariant="Dark">
   <Application.Resources>
     <!-- Omarchy's default theme (Tokyo Night) -->
@@ -22,7 +22,7 @@
     <SolidColorBrush x:Key="GoodBrush" Color="{StaticResource Good}" />
     <SolidColorBrush x:Key="BadBrush" Color="{StaticResource Bad}" />
     <SolidColorBrush x:Key="WarnBrush" Color="{StaticResource Warn}" />
-    <FontFamily x:Key="Mono">avares://SurfaceUsbCreator/Assets/Fonts#JetBrainsMono Nerd Font</FontFamily>
+    <FontFamily x:Key="Mono">avares://OmarchyArmInstaller/Assets/Fonts#JetBrainsMono Nerd Font</FontFamily>
   </Application.Resources>
 
   <Application.Styles>

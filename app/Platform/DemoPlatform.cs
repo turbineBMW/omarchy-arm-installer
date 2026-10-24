@@ -1,18 +1,18 @@
-namespace SurfaceUsbCreator.Platform;
+namespace OmarchyArmInstaller.Platform;
 
-/// Stands in for Windows when the creator runs on Linux: a Surface Pro 11
-/// with BitLocker on and one USB stick, and every write only simulated. The
-/// driver store is real when SURFACE_CREATOR_DRIVER_STORE points at one (the
+/// Stands in for Windows when the installer runs on Linux: a machine with
+/// BitLocker on and one USB stick, and every write only simulated. The
+/// driver store is real when OMARCHY_DEMO_DRIVER_STORE points at one (the
 /// Windows partition mounted from Linux), so the firmware step shows real files.
 public sealed class DemoPlatform : IPlatform
 {
     public bool IsDemo => true;
 
-    public MachineInfo GetMachine() => new("Surface Pro, 11th Edition", "Surface_Pro_11th_Edition_2076", true, true);
+    public MachineInfo GetMachine() => new("Demo", "", true, true);
 
-    public string DriverStore => Environment.GetEnvironmentVariable("SURFACE_CREATOR_DRIVER_STORE") ?? "/nonexistent";
+    public string DriverStore => Environment.GetEnvironmentVariable("OMARCHY_DEMO_DRIVER_STORE") ?? "/nonexistent";
 
-    public string DownloadFolder => Path.Combine(Path.GetTempPath(), "surface-usb-creator");
+    public string DownloadFolder => Path.Combine(Path.GetTempPath(), "omarchy-arm-installer");
 
     public Core.Hardware.IHardwareSource Hardware { get; } = new DemoHardware();
 
@@ -31,8 +31,8 @@ public sealed class DemoPlatform : IPlatform
 
     public async Task WriteImageAsync(string image, UsbDisk disk, IProgress<double> progress, CancellationToken ct)
     {
-        // SURFACE_CREATOR_FAIL=1 shows what a failing write looks like.
-        if (Environment.GetEnvironmentVariable("SURFACE_CREATOR_FAIL") == "1")
+        // OMARCHY_DEMO_FAIL=1 shows what a failing write looks like.
+        if (Environment.GetEnvironmentVariable("OMARCHY_DEMO_FAIL") == "1")
         {
             await Task.Delay(800, ct);
             throw new InvalidOperationException("Checking the stick and listing its volumes failed: Access is denied.");
