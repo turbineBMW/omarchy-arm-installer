@@ -17,19 +17,39 @@ public partial class MainWindow : Window
         Opened += async (_, _) =>
         {
             // Demo only: start on a later step, for screenshots of each one.
-            if (model.IsDemo && int.TryParse(Environment.GetEnvironmentVariable("SURFACE_CREATOR_STEP"), out var step))
+            // SURFACE_CREATOR_MODE is install or report; STEP counts within it.
+            var mode = model.IsDemo ? Environment.GetEnvironmentVariable("SURFACE_CREATOR_MODE") : null;
+            if (mode is null) return;
+            await model.StartAsync(mode == "report");
+            if (int.TryParse(Environment.GetEnvironmentVariable("SURFACE_CREATOR_STEP"), out var step) && step > 0)
             {
                 if (Environment.GetEnvironmentVariable("SURFACE_CREATOR_IMAGE") is { } image) model.UseLocalImage(image);
                 if (Enum.TryParse<MainViewModel.WindowsPlan>(Environment.GetEnvironmentVariable("SURFACE_CREATOR_PLAN"), out var plan))
                     model.Plan = plan;
-                for (var i = 0; i < step; i++) { model.Step = i; await model.EnterAsync(); }
+                if (model.IsReport) await model.CollectAsync();
+                for (var i = 1; i < step; i++) { model.Step = i; await model.EnterAsync(); }
                 model.Step = step;
                 model.Error = null;
+                await model.EnterAsync();
             }
-            await model.EnterAsync();
-            if (model.IsDemo && model.IsCreateStep && Environment.GetEnvironmentVariable("SURFACE_CREATOR_CREATE") == "1")
+            if (model.IsCreateStep && Environment.GetEnvironmentVariable("SURFACE_CREATOR_CREATE") == "1")
                 await model.CreateAsync();
+            if (model.IsCollectStep && Environment.GetEnvironmentVariable("SURFACE_CREATOR_CREATE") == "1")
+                await model.CollectAsync();
         };
+    }
+
+    async void StartInstall(object? sender, RoutedEventArgs e) => await model.StartAsync(report: false);
+    async void StartReport(object? sender, RoutedEventArgs e) => await model.StartAsync(report: true);
+    async void Collect(object? sender, RoutedEventArgs e) => await model.CollectAsync();
+    async void OpenReportForm(object? sender, RoutedEventArgs e) => await Launcher.LaunchUriAsync(new Uri(model.ReportIssueUrl));
+
+    async void ShowReport(object? sender, RoutedEventArgs e)
+    {
+        if (OperatingSystem.IsWindows())
+            System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{model.ReportPath}\"");
+        else
+            await Launcher.LaunchDirectoryInfoAsync(new DirectoryInfo(Path.GetDirectoryName(model.ReportPath)!));
     }
 
     async void Next(object? sender, RoutedEventArgs e) => await model.NextAsync();

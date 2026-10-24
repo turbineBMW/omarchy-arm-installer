@@ -34,6 +34,9 @@ public interface IPlatform
     string DriverStore { get; }
     string DownloadFolder { get; }
 
+    /// Reads what a hardware report is made from.
+    Core.Hardware.IHardwareSource Hardware { get; }
+
     Task<IReadOnlyList<UsbDisk>> ListUsbDisksAsync(CancellationToken ct);
     Task<BitLockerState> GetBitLockerAsync(CancellationToken ct);
     Task<SystemPartition> GetSystemPartitionAsync(CancellationToken ct);

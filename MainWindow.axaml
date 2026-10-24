@@ -5,7 +5,7 @@
         xmlns:platform="using:SurfaceUsbCreator.Platform"
         x:Class="SurfaceUsbCreator.MainWindow"
         x:DataType="local:MainViewModel"
-        Title="Surface Pro 11 for Omarchy · USB Creator"
+        Title="Omarchy · USB creator and hardware report"
         Width="920" Height="640" MinWidth="820" MinHeight="580"
         WindowStartupLocation="CenterScreen">
 
@@ -36,6 +36,12 @@
     <Style Selector="TextBlock.notok">
       <Setter Property="Foreground" Value="{StaticResource BadBrush}" />
     </Style>
+    <Style Selector="Button.choice">
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+      <Setter Property="Padding" Value="18,14" />
+      <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+    </Style>
     <Style Selector="StackPanel.step">
       <Setter Property="Spacing" Value="14" />
     </Style>
@@ -58,7 +64,7 @@
       <DockPanel>
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,34">
           <TextBlock Text="omarchy" FontSize="28" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
-          <TextBlock Text="for Surface Pro 11" Classes="dim" />
+          <TextBlock Text="{Binding Subtitle}" Classes="dim" />
           <TextBlock Text="We can fix everything… once we get past Windows." Classes="dim" FontStyle="Italic"
                      FontSize="12" TextWrapping="Wrap" Margin="0,14,0,0" />
         </StackPanel>
@@ -82,6 +88,68 @@
     <ScrollViewer Grid.Column="1" Padding="36,28,36,8">
       <StackPanel Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
         <TextBlock Text="{Binding StepTitle}" Classes="h1" />
+
+        <!-- Start -->
+        <StackPanel Classes="step" IsVisible="{Binding IsStartStep}">
+          <Button Classes="choice" Click="StartInstall">
+            <StackPanel Spacing="6">
+              <TextBlock Text="Make an Omarchy USB stick" FontWeight="Bold" />
+              <TextBlock Classes="dim body" Text="For the Surface Pro 11: a stick that installs Omarchy and carries this Surface's firmware, so BitLocker can stay on and Windows can stay next to it." />
+            </StackPanel>
+          </Button>
+          <Button Classes="choice" Click="StartReport">
+            <StackPanel Spacing="6">
+              <TextBlock Text="Share a hardware report" FontWeight="Bold" />
+              <TextBlock Classes="dim body" Text="For any Windows on Arm laptop: collects what Linux developers need to support it, and helps you send it to them. Nothing on this computer changes." />
+            </StackPanel>
+          </Button>
+        </StackPanel>
+
+        <!-- Hardware report -->
+        <StackPanel Classes="step" IsVisible="{Binding IsCollectStep}">
+          <TextBlock Classes="body" Text="Linux runs on Arm laptops through a device tree: a description of the hardware, written by hand for each model. Writing one takes what this computer's firmware and Windows know about it. This reads that and saves it as one zip file." />
+          <Border Classes="panel">
+            <StackPanel Spacing="4">
+              <TextBlock Text="What the report holds" FontWeight="Bold" />
+              <TextBlock Classes="dim body" Text="· The firmware's ACPI and SMBIOS tables&#10;· The hardware IDs Linux's boot loader picks a device tree by&#10;· Every device, its driver and where it sits in the firmware&#10;· The built-in display's identity (EDID)&#10;· The names and checksums of the firmware files in the drivers, not the files" />
+              <TextBlock Text="What it leaves out" FontWeight="Bold" Margin="0,8,0,0" />
+              <TextBlock Classes="dim body" Text="Serial numbers, the system UUID, the Windows product key, MAC addresses, and paired Bluetooth devices, printers and drives. You can look inside the zip before you send it." />
+            </StackPanel>
+          </Border>
+          <Button Classes="primary" Content="Collect the report" Click="Collect" IsVisible="{Binding CanCollect}" HorizontalAlignment="Left" />
+          <ItemsControl ItemsSource="{Binding ReportLog}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="local:LogLine">
+                <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3">
+                  <TextBlock Text="&#xf00c;" Classes="ok" IsVisible="{Binding Ok}" />
+                  <TextBlock Text="&#xf254;" Foreground="{StaticResource AccentBrush}" IsVisible="{Binding !Ok}" />
+                  <TextBlock Text="{Binding Text}" />
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <Border Classes="panel" IsVisible="{Binding HasReport}">
+            <TextBlock Classes="body" Text="{Binding ReportFacts}" />
+          </Border>
+          <TextBlock Classes="body warn" Text="{Binding ReportProblems}" IsVisible="{Binding HasReportProblems}" />
+        </StackPanel>
+
+        <!-- Share it -->
+        <StackPanel Classes="step" IsVisible="{Binding IsShareStep}">
+          <TextBlock Classes="body" Text="The report is saved as" />
+          <SelectableTextBlock Text="{Binding ReportPath}" TextWrapping="Wrap" />
+          <Button Content="Show the report" Click="ShowReport" HorizontalAlignment="Left" />
+          <Border Classes="panel">
+            <StackPanel Spacing="12">
+              <TextBlock Classes="body" Text="1  Open the form on GitHub; it needs a free GitHub account. The model and its hardware IDs are filled in already." />
+              <TextBlock Classes="body" Text="2  Drag the zip file into the form, where it says to attach the report." />
+              <TextBlock Classes="body" Text="3  If you know where the manufacturer offers this model's drivers, add the link. Then submit it." />
+            </StackPanel>
+          </Border>
+          <Button Classes="primary" Content="Open the form on GitHub" Click="OpenReportForm" HorizontalAlignment="Left" />
+          <TextBlock Classes="dim body" Text="Left out of the report:" Margin="0,6,0,0" />
+          <TextBlock Classes="dim body" Text="{Binding ReportLeftOut}" />
+        </StackPanel>
 
         <!-- This Surface -->
         <StackPanel Classes="step" IsVisible="{Binding IsSurfaceStep}">
@@ -238,9 +306,9 @@
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="10">
           <Button Content="Open log" Click="OpenLog" IsVisible="{Binding HasError}" />
           <Button Content="Report a problem" Click="ReportProblem" IsVisible="{Binding HasError}" />
-          <Button Content="Back" Click="Back" IsEnabled="{Binding CanGoBack}" />
+          <Button Content="Back" Click="Back" IsEnabled="{Binding CanGoBack}" IsVisible="{Binding !IsStartStep}" />
           <Button Classes="primary" Content="Next" Click="Next" IsEnabled="{Binding CanGoNext}" IsVisible="{Binding ShowNext}" />
-          <Button Classes="primary" Content="Close" Click="Close" IsVisible="{Binding IsDoneStep}" />
+          <Button Classes="primary" Content="Close" Click="Close" IsVisible="{Binding ShowClose}" />
         </StackPanel>
         <TextBlock Text="{Binding Error}" Foreground="{StaticResource BadBrush}" TextWrapping="Wrap" VerticalAlignment="Center" />
       </DockPanel>

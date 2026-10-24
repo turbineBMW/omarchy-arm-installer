@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using SurfaceUsbCreator.Core;
+using SurfaceUsbCreator.Core.Hardware;
 using SurfaceUsbCreator.Platform;
 
 namespace SurfaceUsbCreator;
@@ -22,9 +23,25 @@ public sealed record LogLine(string Text, bool Ok);
 
 public sealed class MainViewModel : INotifyPropertyChanged
 {
-    public enum Steps { Surface, Firmware, Installer, Stick, Windows, Create, Done }
+    public enum Steps { Start, Surface, Firmware, Installer, Stick, Windows, Create, Done, Collect, Share }
 
-    static readonly string[] Titles = ["This Surface", "Firmware", "Installer", "USB stick", "Windows", "Create", "Next steps"];
+    static readonly Dictionary<Steps, string> Titles = new()
+    {
+        [Steps.Start] = "What would you like to do?",
+        [Steps.Surface] = "This Surface",
+        [Steps.Firmware] = "Firmware",
+        [Steps.Installer] = "Installer",
+        [Steps.Stick] = "USB stick",
+        [Steps.Windows] = "Windows",
+        [Steps.Create] = "Create",
+        [Steps.Done] = "Next steps",
+        [Steps.Collect] = "Hardware report",
+        [Steps.Share] = "Share it",
+    };
+
+    /// The two things the tool does, each its own run of steps.
+    static readonly Steps[] InstallFlow = [Steps.Surface, Steps.Firmware, Steps.Installer, Steps.Stick, Steps.Windows, Steps.Create, Steps.Done];
+    static readonly Steps[] ReportFlow = [Steps.Collect, Steps.Share];
 
     readonly IPlatform platform;
     CancellationTokenSource? work;
@@ -32,7 +49,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public MainViewModel(IPlatform platform)
     {
         this.platform = platform;
-        StepItems = new ObservableCollection<StepItem>(Titles.Select((t, i) => new StepItem(t, i, this)));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -40,40 +56,69 @@ public sealed class MainViewModel : INotifyPropertyChanged
     void ChangedAll() => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null));
 
     public bool IsDemo => platform.IsDemo;
-    public ObservableCollection<StepItem> StepItems { get; }
+    public ObservableCollection<StepItem> StepItems { get; } = [];
 
-    int step;
-    public int Step
+    Steps[] flow = [];
+    Steps current = Steps.Start;
+    public Steps Current
     {
-        get => step;
+        get => current;
         set
         {
-            step = value;
-            for (var i = 0; i < StepItems.Count; i++) StepItems[i] = new StepItem(Titles[i], i, this);
+            current = value;
+            StepItems.Clear();
+            for (var i = 0; i < flow.Length; i++) StepItems.Add(new StepItem(Titles[flow[i]], i, this));
             ChangedAll();
         }
     }
 
-    public bool IsSurfaceStep => Step == (int)Steps.Surface;
-    public bool IsFirmwareStep => Step == (int)Steps.Firmware;
-    public bool IsInstallerStep => Step == (int)Steps.Installer;
-    public bool IsStickStep => Step == (int)Steps.Stick;
-    public bool IsWindowsStep => Step == (int)Steps.Windows;
-    public bool IsCreateStep => Step == (int)Steps.Create;
-    public bool IsDoneStep => Step == (int)Steps.Done;
-    public string StepTitle => Titles[Step];
+    /// The position in the chosen run of steps; -1 on the start screen.
+    public int Step
+    {
+        get => Array.IndexOf(flow, current);
+        set => Current = flow[value];
+    }
 
-    public bool CanGoBack => Step > 0 && !Busy && (Step < (int)Steps.Create || (Step == (int)Steps.Create && (CreateLog.Count == 0 || HasError)));
-    public bool CanGoNext => !Busy && (Steps)Step switch
+    public bool IsStartStep => Current == Steps.Start;
+    public bool IsSurfaceStep => Current == Steps.Surface;
+    public bool IsFirmwareStep => Current == Steps.Firmware;
+    public bool IsInstallerStep => Current == Steps.Installer;
+    public bool IsStickStep => Current == Steps.Stick;
+    public bool IsWindowsStep => Current == Steps.Windows;
+    public bool IsCreateStep => Current == Steps.Create;
+    public bool IsDoneStep => Current == Steps.Done;
+    public bool IsCollectStep => Current == Steps.Collect;
+    public bool IsShareStep => Current == Steps.Share;
+    public string StepTitle => Titles[Current];
+    public bool IsReport => flow == ReportFlow;
+    public string Subtitle => IsStartStep ? "for Windows on Arm laptops" : IsReport ? "hardware report" : "for Surface Pro 11";
+
+    public bool CanGoBack => !IsStartStep && !Busy && Current switch
+    {
+        Steps.Create => CreateLog.Count == 0 || HasError,
+        Steps.Done => false,
+        _ => true,
+    };
+    public bool CanGoNext => !Busy && Current switch
     {
         Steps.Surface => SurfaceOk,
         Steps.Firmware => FirmwareOk,
         Steps.Installer => ImagePath is not null,
         Steps.Stick => SelectedDisk is not null,
         Steps.Windows => (!BitLocker.On || KeySaved) && !(AlreadyDone && DiskFreeLow),
+        Steps.Collect => Report is not null,
         _ => false,
     };
-    public bool ShowNext => Step < (int)Steps.Create;
+    public bool ShowNext => Current is not (Steps.Start or Steps.Create or Steps.Done or Steps.Share);
+    public bool ShowClose => Current is Steps.Done or Steps.Share;
+
+    public async Task StartAsync(bool report)
+    {
+        flow = report ? ReportFlow : InstallFlow;
+        Error = null;
+        Step = 0;
+        await EnterAsync();
+    }
 
     bool busy;
     public bool Busy { get => busy; set { busy = value; ChangedAll(); } }
@@ -334,15 +379,93 @@ public sealed class MainViewModel : INotifyPropertyChanged
             await platform.EjectAsync(disk, ct);
             Done("The stick is ready");
         });
-        if (!HasError) Step = (int)Steps.Done;
+        if (!HasError) Current = Steps.Done;
     }
 
-    void Note(string text) => CreateLog.Add(new LogLine(text, false));
+    void Note(string text) => Lines.Add(new LogLine(text, false));
 
     void Done(string text)
     {
-        if (CreateLog.Count > 0 && !CreateLog[^1].Ok) CreateLog[^1] = new LogLine(text, true);
-        else CreateLog.Add(new LogLine(text, true));
+        if (Lines.Count > 0 && !Lines[^1].Ok) Lines[^1] = new LogLine(text, true);
+        else Lines.Add(new LogLine(text, true));
+    }
+
+    /// Where Note and Done write: the list on the current step.
+    ObservableCollection<LogLine> Lines => IsCollectStep ? ReportLog : CreateLog;
+
+    // ---------- Hardware report ----------
+
+    /// Where reports are sent, as issues with the zip attached.
+    public const string ReportRepository = "turbineBMW/omarchy-hardware-reports";
+
+    public ObservableCollection<LogLine> ReportLog { get; } = [];
+    HardwareReport? report;
+    public HardwareReport? Report { get => report; private set { report = value; ChangedAll(); } }
+    public bool HasReport => Report is not null;
+    public bool CanCollect => !Busy && Report is null;
+
+    public string ReportFacts => Report is not { } r ? "" : string.Join("\n", new[]
+    {
+        r.Model,
+        r.Identity.Sku is { } sku ? $"SKU {sku}" : null,
+        r.Processor,
+        r.Panel is { } panel ? $"Panel {panel}" : null,
+        $"{r.Chids.Count} hardware IDs, {r.AcpiTables.Count} ACPI tables, {r.DeviceCount} devices" +
+            (r.ProblemDevices > 0 ? $" ({r.ProblemDevices} without a driver)" : ""),
+        $"{r.FirmwareFiles} firmware files in {r.FirmwarePackages} driver packages, listed by name and hash",
+    }.Where(l => !string.IsNullOrWhiteSpace(l)));
+
+    public string ReportLeftOut => Report is null ? "" : string.Join("\n", Report.Redactions.Select(r => $"\u00b7 {r}"));
+    public string ReportProblems => Report is null ? "" : string.Join("\n", Report.Problems.Select(p => $"\u00b7 {p}"));
+    public bool HasReportProblems => Report is { Problems.Count: > 0 };
+    public string ReportPath => Report?.ZipPath ?? "";
+
+    public async Task CollectAsync()
+    {
+        ReportLog.Clear();
+        Report = null;
+        await RunAsync(async ct =>
+        {
+            var status = new Progress<string>(text =>
+            {
+                if (ReportLog.Count > 0 && !ReportLog[^1].Ok) Done(ReportLog[^1].Text);
+                Note(text);
+            });
+            var hardware = await platform.Hardware.CollectAsync(status, ct);
+            Done(ReportLog.Count > 0 ? ReportLog[^1].Text : "Read the hardware");
+            Note("Writing the report");
+            var built = await Task.Run(() => ReportBuilder.Build(hardware, platform.DownloadFolder, Log.Version, null, ct), ct);
+            Log.Info($"Report {built.Id}: {built.ZipPath}\n{built.Summary}");
+            Done("Report saved");
+            Report = built;
+        });
+    }
+
+    /// A new issue on the reports repository with the form filled in from the
+    /// report; the zip itself has to be dropped in by hand.
+    public string ReportIssueUrl
+    {
+        get
+        {
+            if (Report is not { } r) return "";
+            var id = r.Identity;
+            var title = $"Hardware report: {r.Model}" + (id.Sku is { } sku ? $" ({sku})" : "");
+            var fields = new Dictionary<string, string?>
+            {
+                ["template"] = "hardware-report.yml",
+                ["title"] = title.Length > 120 ? title[..117] + "..." : title,
+                ["manufacturer"] = id.Manufacturer,
+                ["product"] = id.ProductName,
+                ["sku"] = id.Sku,
+                ["processor"] = r.Processor,
+                ["panel"] = r.Panel,
+                ["report"] = $"{r.Id} ({Path.GetFileName(r.ZipPath)})",
+                ["chids"] = string.Join("\n", r.Chids.Select(c => $"{c.Type,4} {c.Fields} {c.Value}")),
+            };
+            return $"https://github.com/{ReportRepository}/issues/new?" + string.Join("&", fields
+                .Where(f => !string.IsNullOrWhiteSpace(f.Value))
+                .Select(f => $"{f.Key}={Uri.EscapeDataString(f.Value!)}"));
+        }
     }
 
     async Task RunAsync(Func<CancellationToken, Task> action)
@@ -431,13 +554,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void Back()
     {
         Error = null;
-        Step--;
+        if (Step == 0)
+        {
+            flow = [];
+            Current = Steps.Start;
+        }
+        else
+        {
+            Step--;
+        }
     }
 
     public async Task EnterAsync()
     {
         Log.Info($"Step: {StepTitle}");
-        switch ((Steps)Step)
+        switch (Current)
         {
             case Steps.Surface: CheckSurface(); break;
             case Steps.Firmware: FindFirmware(); break;

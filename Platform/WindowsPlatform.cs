@@ -22,6 +22,8 @@ public sealed class WindowsPlatform : IPlatform
     public string DownloadFolder => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
 
+    public Core.Hardware.IHardwareSource Hardware { get; } = new WindowsHardware();
+
     public MachineInfo GetMachine()
     {
         var json = PowerShell("Get-CimInstance Win32_ComputerSystem | Select-Object Model, SystemSKUNumber | ConvertTo-Json", "Reading the model");
@@ -257,7 +259,7 @@ public sealed class WindowsPlatform : IPlatform
     /// goes to the log with its full output; a failure throws with the
     /// script's own error message. -EncodedCommand runs the script as one
     /// unit, which stdin (-Command -) does not for multi-line blocks.
-    static string PowerShell(string script, string what)
+    internal static string PowerShell(string script, string what)
     {
         var full = $$"""
             $ErrorActionPreference = 'Stop'

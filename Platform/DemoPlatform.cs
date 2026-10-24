@@ -14,6 +14,8 @@ public sealed class DemoPlatform : IPlatform
 
     public string DownloadFolder => Path.Combine(Path.GetTempPath(), "surface-usb-creator");
 
+    public Core.Hardware.IHardwareSource Hardware { get; } = new DemoHardware();
+
     public Task<IReadOnlyList<UsbDisk>> ListUsbDisksAsync(CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<UsbDisk>>([new UsbDisk(2, "SanDisk Ultra USB 3.0", 31_008_000_000, "4C530001")]);
 
