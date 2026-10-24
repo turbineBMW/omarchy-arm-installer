@@ -13,19 +13,43 @@ jobs:
 
   iso-patches:
     runs-on: ubuntu-latest
-    # Arch, as root, as on the live ISO: some installer code reads /root and
-    # the console keymaps kbd ships.
-    container: archlinux:latest
     steps:
-      - run: pacman -Syu --noconfirm --needed git python kbd systemd
       - uses: actions/checkout@v4
-      - name: Apply the patches to omarchy-iso and run its unit tests
+      - name: Apply the patches to omarchy-iso
         run: |
           git clone --quiet https://github.com/omacom-io/omarchy-iso "$RUNNER_TEMP/omarchy-iso"
           cd "$RUNNER_TEMP/omarchy-iso"
           git checkout --quiet "$(cat "$GITHUB_WORKSPACE/iso/OMARCHY_ISO_COMMIT")"
           git -c user.name=ci -c user.email=ci@localhost am --quiet "$GITHUB_WORKSPACE"/iso/patches/*.patch
-          python3 -m unittest discover -s test/unit -p 'test_*.py'
+      # omarchy-iso's own way (.github/workflows/unit-test.yml): Arch with
+      # systemd running, for localectl's keymaps, and an ordinary user.
+      - name: Run its ./test/all in an Arch container
+        run: |
+          docker run -d --name unit --privileged --cgroupns=host \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /tmp:exec \
+            -v "$RUNNER_TEMP/omarchy-iso:/src:ro" ghcr.io/archlinux/archlinux:latest bash -c '
+              systemctl mask getty.target console-getty.service \
+                systemd-udev-trigger.service systemd-udevd.service \
+                systemd-vconsole-setup.service
+              exec /usr/lib/systemd/systemd
+            '
+          docker exec unit bash -euo pipefail -c '
+            for i in $(seq 1 60); do
+              state=$(systemctl is-system-running 2>/dev/null || true)
+              case $state in running | degraded) break ;; esac
+              sleep 1
+            done
+            for attempt in 1 2 3; do
+              pacman -Syu --noconfirm --needed python parted diffutils jq zip unzip openssh patch git >/dev/null && break
+              [ "$attempt" -lt 3 ] || exit 1
+              sleep 15
+            done
+            useradd -m tester
+            cp -r /src /home/tester/omarchy-iso
+            chown -R tester /home/tester/omarchy-iso
+            cd /home/tester/omarchy-iso
+            setpriv --reuid=tester --regid=tester --init-groups ./test/all
+          '
 
   app:
     runs-on: ubuntu-latest
