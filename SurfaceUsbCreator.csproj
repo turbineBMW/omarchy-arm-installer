@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>SurfaceUsbCreator</AssemblyName>
+    <RootNamespace>SurfaceUsbCreator</RootNamespace>
+    <Product>Surface Pro 11 for Omarchy USB Creator</Product>
+    <Version>1.0.0</Version>
+    <!-- One self-contained executable for the Surface Pro 11 (Windows on ARM). -->
+    <RuntimeIdentifiers>win-arm64;linux-arm64</RuntimeIdentifiers>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.22" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.22" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.22" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\**" />
+    <!-- The same list bin/make-usb reads: what OMARCHY_FW carries. -->
+    <EmbeddedResource Include="..\iso\firmware-files.txt" LogicalName="firmware-files.txt" />
+  </ItemGroup>
+
+</Project>

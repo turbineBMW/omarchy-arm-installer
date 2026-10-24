@@ -1,0 +1,234 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:SurfaceUsbCreator"
+        xmlns:core="using:SurfaceUsbCreator.Core"
+        xmlns:platform="using:SurfaceUsbCreator.Platform"
+        x:Class="SurfaceUsbCreator.MainWindow"
+        x:DataType="local:MainViewModel"
+        Title="Surface Pro 11 for Omarchy · USB Creator"
+        Width="920" Height="640" MinWidth="820" MinHeight="580"
+        WindowStartupLocation="CenterScreen">
+
+  <Window.Styles>
+    <Style Selector="TextBlock.mark">
+      <Setter Property="Width" Value="22" />
+      <Setter Property="Foreground" Value="{StaticResource DimBrush}" />
+    </Style>
+    <Style Selector="TextBlock.mark.current">
+      <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+    </Style>
+    <Style Selector="TextBlock.mark.done">
+      <Setter Property="Foreground" Value="{StaticResource GoodBrush}" />
+    </Style>
+    <Style Selector="TextBlock.steptitle">
+      <Setter Property="Foreground" Value="{StaticResource DimBrush}" />
+    </Style>
+    <Style Selector="TextBlock.steptitle.current">
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+      <Setter Property="FontWeight" Value="Bold" />
+    </Style>
+    <Style Selector="TextBlock.ok">
+      <Setter Property="Foreground" Value="{StaticResource GoodBrush}" />
+    </Style>
+    <Style Selector="TextBlock.notok">
+      <Setter Property="Foreground" Value="{StaticResource BadBrush}" />
+    </Style>
+    <Style Selector="StackPanel.step">
+      <Setter Property="Spacing" Value="14" />
+    </Style>
+    <Style Selector="ListBoxItem">
+      <Setter Property="Padding" Value="12,8" />
+      <Setter Property="CornerRadius" Value="0" />
+    </Style>
+    <Style Selector="ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+    </Style>
+  </Window.Styles>
+
+  <Grid ColumnDefinitions="250,*" RowDefinitions="*,Auto">
+
+    <!-- Steps -->
+    <Border Grid.RowSpan="2" Background="{StaticResource SurfaceBrush}"
+            BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,0" Padding="26,28">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,34">
+          <TextBlock Text="omarchy" FontSize="28" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
+          <TextBlock Text="for Surface Pro 11" Classes="dim" />
+        </StackPanel>
+        <TextBlock DockPanel.Dock="Bottom" IsVisible="{Binding IsDemo}" Foreground="{StaticResource WarnBrush}"
+                   TextWrapping="Wrap" FontSize="12"
+                   Text="Demo: not running on Windows, so nothing is written." />
+        <ItemsControl ItemsSource="{Binding StepItems}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="local:StepItem">
+              <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                <TextBlock Text="{Binding Mark}" Classes="mark" Classes.current="{Binding IsCurrent}" Classes.done="{Binding IsDone}" />
+                <TextBlock Text="{Binding Title}" Classes="steptitle" Classes.current="{Binding IsCurrent}" />
+              </StackPanel>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </DockPanel>
+    </Border>
+
+    <!-- Current step -->
+    <ScrollViewer Grid.Column="1" Padding="36,28,36,8">
+      <StackPanel Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
+        <TextBlock Text="{Binding StepTitle}" Classes="h1" />
+
+        <!-- This Surface -->
+        <StackPanel Classes="step" IsVisible="{Binding IsSurfaceStep}">
+          <TextBlock Classes="body" Text="This makes a USB stick that installs Omarchy on this Surface. It carries the firmware Linux needs from this Surface's own Windows, so BitLocker can stay on, and Windows can stay next to Omarchy or make way for it." />
+          <ItemsControl ItemsSource="{Binding SurfaceChecks}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="local:Check">
+                <Grid ColumnDefinitions="22,*" RowDefinitions="Auto,Auto" Margin="0,4">
+                  <TextBlock Text="{Binding Mark}" Classes.ok="{Binding Ok}" Classes.notok="{Binding !Ok}" />
+                  <TextBlock Grid.Column="1" Text="{Binding Text}" />
+                  <TextBlock Grid.Column="1" Grid.Row="1" Text="{Binding Detail}" Classes="dim" FontSize="12"
+                             TextWrapping="Wrap" IsVisible="{Binding Detail, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <TextBlock Classes="body" Foreground="{StaticResource WarnBrush}" Text="{Binding SurfaceNote}" />
+        </StackPanel>
+
+        <!-- Firmware -->
+        <StackPanel Classes="step" IsVisible="{Binding IsFirmwareStep}">
+          <TextBlock Classes="body" Text="Sound, the sensors, the battery gauge and graphics need firmware that only Windows has. These files are copied from this Surface onto the stick, and only there: nothing is downloaded or shared." />
+          <ItemsControl ItemsSource="{Binding Firmware}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="core:FirmwarePackage">
+                <Border Classes="panel" Margin="0,0,0,8">
+                  <StackPanel Spacing="4">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                      <TextBlock Text="&#xf00c;" Classes="ok" IsVisible="{Binding Complete}" />
+                      <TextBlock Text="&#xf00d;" Classes="notok" IsVisible="{Binding !Complete}" />
+                      <TextBlock Text="{Binding Label}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding Details}" Classes="dim" FontSize="12" Margin="22,0,0,0" TextWrapping="Wrap" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <TextBlock Classes="dim body" FontSize="12" Text="{Binding FirmwareSummary}" />
+        </StackPanel>
+
+        <!-- Installer -->
+        <StackPanel Classes="step" IsVisible="{Binding IsInstallerStep}">
+          <TextBlock Classes="body" Text="The Omarchy installer for the Surface Pro 11: Omarchy itself, with this Surface's kernel, fixes and extras built in." />
+          <Border Classes="panel">
+            <DockPanel>
+              <Button DockPanel.Dock="Right" Classes="primary" Content="Download" Click="Download" IsEnabled="{Binding CanDownload}" />
+              <TextBlock Text="{Binding ReleaseText}" VerticalAlignment="Center" />
+            </DockPanel>
+          </Border>
+          <StackPanel Orientation="Horizontal" Spacing="12">
+            <TextBlock Text="or" Classes="dim" VerticalAlignment="Center" />
+            <Button Content="Choose an ISO file…" Click="ChooseIso" IsEnabled="{Binding !Busy}" />
+          </StackPanel>
+          <StackPanel Spacing="6" IsVisible="{Binding Busy}">
+            <TextBlock Text="{Binding ProgressText}" Classes="dim" />
+            <ProgressBar Value="{Binding Progress}" Maximum="1" />
+          </StackPanel>
+          <TextBlock Classes="body" Text="{Binding ImageText}" />
+        </StackPanel>
+
+        <!-- USB stick -->
+        <StackPanel Classes="step" IsVisible="{Binding IsStickStep}">
+          <TextBlock Classes="body" Text="Plug in a USB stick of 8 GB or more. Everything on it will be erased." />
+          <ListBox ItemsSource="{Binding Disks}" SelectedItem="{Binding SelectedDisk}" Background="Transparent">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="platform:UsbDisk">
+                <TextBlock Text="{Binding Description}" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <TextBlock Classes="dim body" IsVisible="{Binding NoDisks}" Text="No USB stick of 8 GB or more found." />
+          <Button Content="Look again" Click="Refresh" HorizontalAlignment="Left" />
+        </StackPanel>
+
+        <!-- Windows -->
+        <StackPanel Classes="step" IsVisible="{Binding IsWindowsStep}">
+          <RadioButton GroupName="windows" IsChecked="{Binding KeepWindows}" IsEnabled="{Binding CanShrink}">
+            <StackPanel Spacing="6">
+              <TextBlock Text="Keep Windows next to Omarchy" FontWeight="Bold" />
+              <TextBlock Classes="dim body" Text="Makes room by shrinking C:. Omarchy's boot menu lists Windows, and Omarchy can restart into it." />
+            </StackPanel>
+          </RadioButton>
+          <StackPanel Margin="30,0,0,0" Spacing="4" IsVisible="{Binding KeepWindows}">
+            <Slider Minimum="32" Maximum="{Binding MaxShrinkGb}" Value="{Binding ShrinkGb}" TickFrequency="8" IsSnapToTickEnabled="True" />
+            <TextBlock Text="{Binding ShrinkText}" Classes="dim" />
+          </StackPanel>
+          <RadioButton GroupName="windows" IsChecked="{Binding ReplaceWindows}">
+            <StackPanel Spacing="6">
+              <TextBlock Text="Replace Windows with Omarchy" FontWeight="Bold" />
+              <TextBlock Classes="dim body" Text="Windows is left as it is now; Omarchy's installer erases the whole disk." />
+            </StackPanel>
+          </RadioButton>
+
+          <Border Classes="panel" IsVisible="{Binding BitLocker.On}" BorderBrush="{StaticResource WarnBrush}">
+            <StackPanel Spacing="10">
+              <TextBlock Text="BitLocker is on" FontWeight="Bold" Foreground="{StaticResource WarnBrush}" />
+              <TextBlock Classes="body" Text="Omarchy needs Secure Boot off, and Windows may then ask for its recovery key. The creator pauses BitLocker for the next three starts, but keep the key safe in case: save it somewhere other than this Surface and the stick." />
+              <SelectableTextBlock Text="{Binding RecoveryKeys}" FontSize="16" />
+              <Button Content="Save the recovery key…" Click="SaveKey" HorizontalAlignment="Left" />
+              <CheckBox IsChecked="{Binding KeySaved}" Content="I have saved my recovery key" />
+            </StackPanel>
+          </Border>
+        </StackPanel>
+
+        <!-- Create -->
+        <StackPanel Classes="step" IsVisible="{Binding IsCreateStep}">
+          <TextBlock Classes="body" Text="{Binding Summary}" />
+          <Button Classes="primary" Content="Create the USB stick" Click="Create" IsVisible="{Binding !Busy}" HorizontalAlignment="Left" />
+          <ItemsControl ItemsSource="{Binding Log}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="local:LogLine">
+                <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3">
+                  <TextBlock Text="&#xf00c;" Classes="ok" IsVisible="{Binding Ok}" />
+                  <TextBlock Text="&#xf254;" Foreground="{StaticResource AccentBrush}" IsVisible="{Binding !Ok}" />
+                  <TextBlock Text="{Binding Text}" />
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <StackPanel Spacing="6" IsVisible="{Binding Busy}">
+            <TextBlock Text="{Binding ProgressText}" Classes="dim" />
+            <ProgressBar Value="{Binding Progress}" Maximum="1" />
+            <Button Content="Stop" Click="Cancel" HorizontalAlignment="Left" />
+          </StackPanel>
+        </StackPanel>
+
+        <!-- Next steps -->
+        <StackPanel Classes="step" IsVisible="{Binding IsDoneStep}">
+          <TextBlock Classes="body" Text="The stick is ready. Leave it plugged in, then:" />
+          <Border Classes="panel">
+            <StackPanel Spacing="12">
+              <TextBlock Classes="body" Text="1  Turn Secure Boot off: shut down, hold Volume Up and press Power. In Surface UEFI, open Security, set Secure Boot to Disabled, then Exit and restart now." />
+              <TextBlock Classes="body" Text="2  Start from the stick: shut down, hold Volume Down and press Power, and let go when the Surface logo shows." />
+              <TextBlock Classes="body" Text="3  In the installer, choose the free space to keep Windows, or the whole disk to replace it." />
+            </StackPanel>
+          </Border>
+          <TextBlock Classes="dim body" Text="Omarchy reads this Surface's firmware from the stick while it installs; nothing else is needed." />
+        </StackPanel>
+      </StackPanel>
+    </ScrollViewer>
+
+    <!-- Error and navigation -->
+    <Border Grid.Column="1" Grid.Row="1" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="36,14">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="10">
+          <Button Content="Back" Click="Back" IsEnabled="{Binding CanGoBack}" />
+          <Button Classes="primary" Content="Next" Click="Next" IsEnabled="{Binding CanGoNext}" IsVisible="{Binding ShowNext}" />
+          <Button Classes="primary" Content="Close" Click="Close" IsVisible="{Binding IsDoneStep}" />
+        </StackPanel>
+        <TextBlock Text="{Binding Error}" Foreground="{StaticResource BadBrush}" TextWrapping="Wrap" VerticalAlignment="Center" />
+      </DockPanel>
+    </Border>
+  </Grid>
+</Window>
