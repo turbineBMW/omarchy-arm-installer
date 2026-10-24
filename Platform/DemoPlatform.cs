@@ -21,7 +21,7 @@ public sealed class DemoPlatform : IPlatform
         Task.FromResult(new BitLockerState(true, [("{1A2B3C4D-0000-0000-0000-000000000000}", "123456-234567-345678-456789-567890-678901-789012-890123")]));
 
     public Task<SystemPartition> GetSystemPartitionAsync(CancellationToken ct) =>
-        Task.FromResult(new SystemPartition(510_000_000_000, 180_000_000_000));
+        Task.FromResult(new SystemPartition(510_000_000_000, 180_000_000_000, 96_000_000_000));
 
     public Task ShrinkSystemPartitionAsync(long bytes, CancellationToken ct) => Task.Delay(1500, ct);
 
@@ -29,6 +29,12 @@ public sealed class DemoPlatform : IPlatform
 
     public async Task WriteImageAsync(string image, UsbDisk disk, IProgress<double> progress, CancellationToken ct)
     {
+        // SURFACE_CREATOR_FAIL=1 shows what a failing write looks like.
+        if (Environment.GetEnvironmentVariable("SURFACE_CREATOR_FAIL") == "1")
+        {
+            await Task.Delay(800, ct);
+            throw new InvalidOperationException("Checking the stick and listing its volumes failed: Access is denied.");
+        }
         for (var i = 1; i <= 100; i++)
         {
             await Task.Delay(40, ct);

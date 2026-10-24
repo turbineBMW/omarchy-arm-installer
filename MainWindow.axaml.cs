@@ -19,10 +19,16 @@ public partial class MainWindow : Window
             // Demo only: start on a later step, for screenshots of each one.
             if (model.IsDemo && int.TryParse(Environment.GetEnvironmentVariable("SURFACE_CREATOR_STEP"), out var step))
             {
+                if (Environment.GetEnvironmentVariable("SURFACE_CREATOR_IMAGE") is { } image) model.UseLocalImage(image);
+                if (Enum.TryParse<MainViewModel.WindowsPlan>(Environment.GetEnvironmentVariable("SURFACE_CREATOR_PLAN"), out var plan))
+                    model.Plan = plan;
                 for (var i = 0; i < step; i++) { model.Step = i; await model.EnterAsync(); }
                 model.Step = step;
+                model.Error = null;
             }
             await model.EnterAsync();
+            if (model.IsDemo && model.IsCreateStep && Environment.GetEnvironmentVariable("SURFACE_CREATOR_CREATE") == "1")
+                await model.CreateAsync();
         };
     }
 
@@ -33,6 +39,10 @@ public partial class MainWindow : Window
     async void Create(object? sender, RoutedEventArgs e) => await model.CreateAsync();
     void Cancel(object? sender, RoutedEventArgs e) => model.Cancel();
     void Close(object? sender, RoutedEventArgs e) => Close();
+
+    async void OpenLog(object? sender, RoutedEventArgs e) => await Launcher.LaunchFileInfoAsync(new FileInfo(model.LogPath));
+
+    async void ReportProblem(object? sender, RoutedEventArgs e) => await Launcher.LaunchUriAsync(new Uri(model.IssueUrl));
 
     async void ChooseIso(object? sender, RoutedEventArgs e)
     {

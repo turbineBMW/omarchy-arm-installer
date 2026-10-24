@@ -18,8 +18,9 @@ public sealed record UsbDisk(int Number, string Model, long Size, string Serial)
 /// BitLocker on C:. Recovery keys are the 48-digit numerical passwords.
 public sealed record BitLockerState(bool On, IReadOnlyList<(string Id, string Password)> RecoveryKeys);
 
-/// What C: can shrink to, so Omarchy can be installed into the free space.
-public sealed record SystemPartition(long Size, long MinimumSize)
+/// What C: can shrink to, so Omarchy can be installed into the free space,
+/// and the largest stretch of unallocated space already on its disk.
+public sealed record SystemPartition(long Size, long MinimumSize, long DiskFree)
 {
     public long MaxShrink => Math.Max(0, Size - MinimumSize);
 }

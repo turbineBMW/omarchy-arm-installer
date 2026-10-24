@@ -63,14 +63,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsDoneStep => Step == (int)Steps.Done;
     public string StepTitle => Titles[Step];
 
-    public bool CanGoBack => Step > 0 && !Busy && (Step < (int)Steps.Create || (Step == (int)Steps.Create && Log.Count == 0));
+    public bool CanGoBack => Step > 0 && !Busy && (Step < (int)Steps.Create || (Step == (int)Steps.Create && (CreateLog.Count == 0 || HasError)));
     public bool CanGoNext => !Busy && (Steps)Step switch
     {
         Steps.Surface => SurfaceOk,
         Steps.Firmware => FirmwareOk,
         Steps.Installer => ImagePath is not null,
         Steps.Stick => SelectedDisk is not null,
-        Steps.Windows => !BitLocker.On || KeySaved,
+        Steps.Windows => (!BitLocker.On || KeySaved) && !(AlreadyDone && DiskFreeLow),
         _ => false,
     };
     public bool ShowNext => Step < (int)Steps.Create;
@@ -98,12 +98,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
             SurfaceChecks.Add(new Check("Windows on Arm", m.IsArm64));
             SurfaceChecks.Add(new Check("Running as administrator", m.IsAdministrator,
                 m.IsAdministrator ? "" : "Right-click the creator and choose Run as administrator"));
+            Log.Info($"Machine: {m.Model} ({m.Sku}), arm64 {m.IsArm64}, administrator {m.IsAdministrator}");
             SurfaceNote = m.IsSurfacePro11 && !m.IsTestedModel
                 ? "Only the Snapdragon X Elite model with the OLED screen has been tested. Others may not boot."
                 : "";
         }
         catch (Exception e)
         {
+            Log.Error("reading the model", e);
             SurfaceChecks.Add(new Check("Reading this computer's model", false, e.Message));
         }
         ChangedAll();
@@ -119,7 +121,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void FindFirmware()
     {
         Firmware.Clear();
-        foreach (var p in FirmwareCollector.Find(platform.DriverStore)) Firmware.Add(p);
+        foreach (var p in FirmwareCollector.Find(platform.DriverStore))
+        {
+            Firmware.Add(p);
+            Log.Info($"Firmware {p.Pattern}: {(p.Complete ? "complete" : "INCOMPLETE")}, " +
+                     string.Join(", ", p.Found.Select(f => $"{f.Folder}/{f.Name} ({f.Size})").Take(6)) +
+                     (p.Found.Count > 6 ? $" and {p.Found.Count - 6} more" : ""));
+        }
         ChangedAll();
     }
 
@@ -171,6 +179,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void UseLocalImage(string path)
     {
+        Log.Info($"Image: {path} ({new FileInfo(path).Length} bytes)");
         ImagePath = path;
         Error = null;
         ChangedAll();
@@ -192,19 +201,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
             foreach (var d in disks.Where(d => d.Size >= 8_000_000_000)) Disks.Add(d);
             if (SelectedDisk is not null && !Disks.Contains(SelectedDisk)) SelectedDisk = null;
             if (Disks.Count == 1) SelectedDisk = Disks[0];
+            Log.Info($"USB sticks: {(disks.Count == 0 ? "none" : string.Join("; ", disks.Select(d => d.Description)))}");
         }
         catch (Exception e)
         {
-            Error = e.Message;
+            Fail("listing USB sticks", e);
         }
         ChangedAll();
     }
 
     // ---------- Windows ----------
 
-    bool keepWindows = true;
-    public bool KeepWindows { get => keepWindows; set { keepWindows = value; ChangedAll(); } }
-    public bool ReplaceWindows { get => !keepWindows; set => KeepWindows = !value; }
+    public enum WindowsPlan { Keep, AlreadyDone, Replace }
+
+    WindowsPlan plan = WindowsPlan.Keep;
+    public WindowsPlan Plan { get => plan; set { plan = value; ChangedAll(); } }
+    public bool KeepWindows { get => Plan == WindowsPlan.Keep; set { if (value) Plan = WindowsPlan.Keep; } }
+    public bool AlreadyDone { get => Plan == WindowsPlan.AlreadyDone; set { if (value) Plan = WindowsPlan.AlreadyDone; } }
+    public bool ReplaceWindows { get => Plan == WindowsPlan.Replace; set { if (value) Plan = WindowsPlan.Replace; } }
+    /// Windows stays, so Secure Boot going off is something it will notice.
+    public bool WindowsStays => Plan != WindowsPlan.Replace;
+
+    public string DiskFreeText => Partition is null ? "" : Partition.DiskFree >= 20e9
+        ? $"{Partition.DiskFree / 1e9:0} GB of unallocated space found on this disk."
+        : $"Only {Partition.DiskFree / 1e9:0} GB of unallocated space on this disk; Omarchy needs at least 20 GB.";
+    public bool DiskFreeLow => Partition is not null && Partition.DiskFree < 20e9;
 
     public SystemPartition? Partition { get; private set; }
     public double MaxShrinkGb => Partition is null ? 0 : Math.Floor(Partition.MaxShrink / 1e9);
@@ -224,12 +245,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             Partition = await platform.GetSystemPartitionAsync(CancellationToken.None);
             ShrinkGb = Math.Clamp(ShrinkGb, 32, Math.Max(32, MaxShrinkGb));
-            if (!CanShrink) KeepWindows = false;
+            if (!CanShrink && Plan == WindowsPlan.Keep) Plan = Partition!.DiskFree >= 20e9 ? WindowsPlan.AlreadyDone : WindowsPlan.Replace;
+            Log.Info($"C: {Partition!.Size / 1e9:0.0} GB, shrinkable to {Partition.MinimumSize / 1e9:0.0} GB; {Partition.DiskFree / 1e9:0.0} GB unallocated");
             BitLocker = await platform.GetBitLockerAsync(CancellationToken.None);
+            Log.Info($"BitLocker on C:: {(BitLocker.On ? "on" : "off")}, {BitLocker.RecoveryKeys.Count} recovery key(s)");
         }
         catch (Exception e)
         {
-            Error = e.Message;
+            Fail("reading C: and BitLocker", e);
         }
         ChangedAll();
     }
@@ -243,33 +266,41 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     // ---------- Create ----------
 
-    public ObservableCollection<LogLine> Log { get; } = [];
+    public ObservableCollection<LogLine> CreateLog { get; } = [];
     public string Summary => SelectedDisk is null ? "" :
         $"Erase {SelectedDisk.Description} and write {Path.GetFileName(ImagePath)} to it, with this Surface's firmware.\n" +
-        (KeepWindows
-            ? $"Shrink C: by {ShrinkGb:0} GB so Omarchy installs next to Windows." +
-              (BitLocker.On ? "\nPause BitLocker for the next 3 starts, while Secure Boot is turned off and Omarchy is installed." : "")
-            : "Leave Windows as it is; Omarchy's installer will erase this Surface's disk.");
+        Plan switch
+        {
+            WindowsPlan.Keep => $"Shrink C: by {ShrinkGb:0} GB so Omarchy installs next to Windows.",
+            WindowsPlan.AlreadyDone => "Leave C: as it is: Omarchy installs into the space you made.",
+            _ => "Leave Windows as it is; Omarchy's installer will erase this Surface's disk.",
+        } +
+        (WindowsStays && BitLocker.On ? "\nPause BitLocker for the next 3 starts, while Secure Boot is turned off and Omarchy is installed." : "");
+
+    bool shrunk;
 
     public async Task CreateAsync()
     {
         if (SelectedDisk is null || ImagePath is null) return;
         var disk = SelectedDisk;
         var image = ImagePath;
-        Log.Clear();
+        CreateLog.Clear();
         await RunAsync(async ct =>
         {
-            if (KeepWindows)
+            Log.Info($"Creating: disk {disk.Number} ({disk.Model}, {disk.Size} bytes), image {image}, plan {Plan}, shrink {ShrinkGb} GB, BitLocker {(BitLocker.On ? "on" : "off")}");
+            // A retry after a failure must not shrink C: a second time.
+            if (Plan == WindowsPlan.Keep && !shrunk)
             {
                 Note($"Shrinking C: by {ShrinkGb:0} GB");
                 await platform.ShrinkSystemPartitionAsync((long)(ShrinkGb * 1e9), ct);
+                shrunk = true;
                 Done($"C: shrunk; {ShrinkGb:0} GB free for Omarchy");
-                if (BitLocker.On)
-                {
-                    Note("Pausing BitLocker for 3 starts");
-                    await platform.SuspendBitLockerAsync(3, ct);
-                    Done("BitLocker paused for the next 3 starts");
-                }
+            }
+            if (WindowsStays && BitLocker.On)
+            {
+                Note("Pausing BitLocker for 3 starts");
+                await platform.SuspendBitLockerAsync(3, ct);
+                Done("BitLocker paused for the next 3 starts");
             }
 
             Note($"Writing the installer to {disk.Model.Trim()}");
@@ -288,12 +319,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (!HasError) Step = (int)Steps.Done;
     }
 
-    void Note(string text) => Log.Add(new LogLine(text, false));
+    void Note(string text) => CreateLog.Add(new LogLine(text, false));
 
     void Done(string text)
     {
-        if (Log.Count > 0 && !Log[^1].Ok) Log[^1] = new LogLine(text, true);
-        else Log.Add(new LogLine(text, true));
+        if (CreateLog.Count > 0 && !CreateLog[^1].Ok) CreateLog[^1] = new LogLine(text, true);
+        else CreateLog.Add(new LogLine(text, true));
     }
 
     async Task RunAsync(Func<CancellationToken, Task> action)
@@ -309,10 +340,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         catch (OperationCanceledException)
         {
             Error = "Stopped.";
+            Log.Info("Stopped by the user");
         }
         catch (Exception e)
         {
-            Error = e.Message;
+            Fail(StepTitle, e);
         }
         finally
         {
@@ -323,6 +355,39 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     public void Cancel() => work?.Cancel();
+
+    // ---------- Errors ----------
+
+    string failedStep = "";
+
+    void Fail(string context, Exception e)
+    {
+        Log.Error(context, e);
+        failedStep = StepTitle;
+        Error = e.Message;
+    }
+
+    public string LogPath => Log.FilePath;
+
+    /// A new issue on the repository, filled in with what the log says; the
+    /// log file itself has to be attached by hand.
+    public string IssueUrl
+    {
+        get
+        {
+            var machine = SurfaceChecks.FirstOrDefault()?.Detail ?? "";
+            var title = $"USB creator: {Error}";
+            if (title.Length > 120) title = title[..117] + "...";
+            var body =
+                $"**What happened**\n{Error}\n\n" +
+                $"**Step**: {failedStep}\n" +
+                $"**Creator**: {Log.Version}\n" +
+                $"**Machine**: {machine}\n\n" +
+                "**Log**\nPlease attach the log file (drag it into this box):\n" +
+                $"`{Log.FilePath}`\n";
+            return $"https://github.com/{ImageSource.Repository}/issues/new?title={Uri.EscapeDataString(title)}&body={Uri.EscapeDataString(body)}";
+        }
+    }
 
     // ---------- Navigation ----------
 
@@ -341,6 +406,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task EnterAsync()
     {
+        Log.Info($"Step: {StepTitle}");
         switch ((Steps)Step)
         {
             case Steps.Surface: CheckSurface(); break;

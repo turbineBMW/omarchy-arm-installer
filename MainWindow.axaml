@@ -30,6 +30,9 @@
     <Style Selector="TextBlock.ok">
       <Setter Property="Foreground" Value="{StaticResource GoodBrush}" />
     </Style>
+    <Style Selector="TextBlock.warn">
+      <Setter Property="Foreground" Value="{StaticResource WarnBrush}" />
+    </Style>
     <Style Selector="TextBlock.notok">
       <Setter Property="Foreground" Value="{StaticResource BadBrush}" />
     </Style>
@@ -56,6 +59,8 @@
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,34">
           <TextBlock Text="omarchy" FontSize="28" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
           <TextBlock Text="for Surface Pro 11" Classes="dim" />
+          <TextBlock Text="We can fix everything… once we get past Windows." Classes="dim" FontStyle="Italic"
+                     FontSize="12" TextWrapping="Wrap" Margin="0,14,0,0" />
         </StackPanel>
         <TextBlock DockPanel.Dock="Bottom" IsVisible="{Binding IsDemo}" Foreground="{StaticResource WarnBrush}"
                    TextWrapping="Wrap" FontSize="12"
@@ -164,6 +169,14 @@
             <Slider Minimum="32" Maximum="{Binding MaxShrinkGb}" Value="{Binding ShrinkGb}" TickFrequency="8" IsSnapToTickEnabled="True" />
             <TextBlock Text="{Binding ShrinkText}" Classes="dim" />
           </StackPanel>
+          <RadioButton GroupName="windows" IsChecked="{Binding AlreadyDone}">
+            <StackPanel Spacing="6">
+              <TextBlock Text="I've already made room for Omarchy" FontWeight="Bold" />
+              <TextBlock Classes="dim body" Text="Keep Windows and leave C: as it is: you shrank it yourself, and Omarchy installs into that free space." />
+            </StackPanel>
+          </RadioButton>
+          <TextBlock Margin="30,0,0,0" Classes="body" FontSize="12" Text="{Binding DiskFreeText}" IsVisible="{Binding AlreadyDone}"
+                     Classes.dim="{Binding !DiskFreeLow}" Classes.warn="{Binding DiskFreeLow}" />
           <RadioButton GroupName="windows" IsChecked="{Binding ReplaceWindows}">
             <StackPanel Spacing="6">
               <TextBlock Text="Replace Windows with Omarchy" FontWeight="Bold" />
@@ -186,7 +199,7 @@
         <StackPanel Classes="step" IsVisible="{Binding IsCreateStep}">
           <TextBlock Classes="body" Text="{Binding Summary}" />
           <Button Classes="primary" Content="Create the USB stick" Click="Create" IsVisible="{Binding !Busy}" HorizontalAlignment="Left" />
-          <ItemsControl ItemsSource="{Binding Log}">
+          <ItemsControl ItemsSource="{Binding CreateLog}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="local:LogLine">
                 <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3">
@@ -223,6 +236,8 @@
     <Border Grid.Column="1" Grid.Row="1" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="36,14">
       <DockPanel>
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="10">
+          <Button Content="Open log" Click="OpenLog" IsVisible="{Binding HasError}" />
+          <Button Content="Report a problem" Click="ReportProblem" IsVisible="{Binding HasError}" />
           <Button Content="Back" Click="Back" IsEnabled="{Binding CanGoBack}" />
           <Button Classes="primary" Content="Next" Click="Next" IsEnabled="{Binding CanGoNext}" IsVisible="{Binding ShowNext}" />
           <Button Classes="primary" Content="Close" Click="Close" IsVisible="{Binding IsDoneStep}" />
