@@ -1,0 +1,43 @@
+#!/bin/bash
+# Build the installer image: Omarchy's aarch64 ISO with this repository's
+# patches, which read firmware and a device recipe from the stick's
+# OMARCHY_FW partition. Nothing device-specific is built in.
+#
+#   bin/build-iso
+#
+# Environment:
+#   ISO_WORK   checkout and output directory (default .cache/omarchy-iso)
+# Builds in a privileged container through `sudo docker`, as omarchy-iso does.
+set -euo pipefail
+
+root=$(realpath "${BASH_SOURCE[0]%/*}/..")
+arch=aarch64
+work=$(realpath -m "${ISO_WORK:-$root/.cache/omarchy-iso}")
+commit=$(<"$root/iso/OMARCHY_ISO_COMMIT")
+checkout=$work/omarchy-iso
+
+echo "==> omarchy-iso at $commit with $(ls "$root"/iso/patches/*.patch | wc -l) patch(es)"
+if [[ ! -d $checkout/.git ]]; then
+  git clone --quiet https://github.com/omacom-io/omarchy-iso "$checkout"
+fi
+git -C "$checkout" fetch --quiet origin
+git -C "$checkout" checkout --quiet --detach "$commit"
+git -C "$checkout" reset --quiet --hard "$commit"
+git -C "$checkout" clean --quiet -fdx -e release/
+git -C "$checkout" submodule update --quiet --init
+git -C "$checkout" -c user.name=build -c user.email=build@localhost am --quiet "$root"/iso/patches/*.patch
+
+echo "==> Building the ISO"
+# omarchy-iso-make elevates with plain `sudo docker`; with no terminal to ask
+# on, have sudo ask through the desktop's askpass dialog instead.
+if [[ ! -t 0 && -n ${SUDO_ASKPASS:-} ]]; then
+  shim=$work/sudo-askpass
+  mkdir -p "$shim"
+  printf '#!/bin/sh\nexec /usr/bin/sudo -A "$@"\n' >"$shim/sudo"
+  chmod +x "$shim/sudo"
+  export PATH=$shim:$PATH
+  export ASKPASS_REASON=${ASKPASS_REASON:-"Build the Omarchy Arm installer ISO in omarchy-iso's privileged build container"}
+fi
+cd "$checkout"
+bin/omarchy-iso-make --arch "$arch" --edge --keep-pkg-cache --no-boot-offer
+ls -t "$checkout"/release/*.iso | head -1

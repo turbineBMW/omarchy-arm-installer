@@ -1,0 +1,84 @@
+#!/bin/bash
+# Write the installer to a USB stick from Linux and fill its OMARCHY_FW
+# partition, as the Windows app does.
+#
+#   sudo bin/make-usb ISO DEVICE [--firmware FILEREPOSITORY] [--recipe ID]
+#
+# FILEREPOSITORY is a Windows DriverStore/FileRepository directory, such as
+# "/run/media/$USER/Local Disk/Windows/System32/DriverStore/FileRepository";
+# ID is a folder in recipes/. bin/fill-stick says what each copies. Without
+# --firmware the installer reads the Windows partition instead.
+#
+# Everything on DEVICE is erased. It must be a removable USB disk, and the
+# device name has to be typed back to confirm.
+set -euo pipefail
+
+root=$(realpath "${BASH_SOURCE[0]%/*}/..")
+label=OMARCHY_FW
+size_mib=1024
+
+die() { printf 'make-usb: %s\n' "$*" >&2; exit 1; }
+
+iso=${1:-}
+device=${2:-}
+[[ -f $iso && -b $device ]] || die "usage: sudo bin/make-usb ISO DEVICE [--firmware FILEREPOSITORY] [--recipe ID]"
+shift 2
+fill=()
+while (($#)); do
+  case $1 in
+    --firmware) [[ -d ${2:-} ]] || die "no directory ${2:-}"; fill+=(--firmware "$2"); shift 2 ;;
+    --recipe) [[ -f $root/recipes/${2:-}/recipe.json ]] || die "no recipe ${2:-} in recipes/"; fill+=(--recipe "$2"); shift 2 ;;
+    *) die "unknown option $1" ;;
+  esac
+done
+((EUID == 0)) || die "run as root"
+
+name=${device##*/}
+[[ $(lsblk -dno TRAN "$device") == usb && $(lsblk -dno RM "$device") == 1 ]] ||
+  die "$device is not a removable USB disk"
+lsblk -o NAME,SIZE,MODEL,SERIAL,MOUNTPOINTS "$device"
+read -r -p "Erase $device and write $(basename "$iso")? Type '$name' to continue: " answer
+[[ $answer == "$name" ]] || die "not confirmed"
+
+for part in $(lsblk -lnpo NAME "$device" | tail -n +2); do
+  umount "$part" 2>/dev/null || true
+done
+
+echo "==> Writing the image"
+dd if="$iso" of="$device" bs=4M oflag=direct conv=fsync status=progress
+partprobe "$device"
+udevadm settle
+
+# Images from bin/build-iso carry an empty OMARCHY_FW partition; older ones
+# get one appended in the free space.
+part=$(lsblk -lnpo NAME,LABEL "$device" | awk -v label="$label" '$2 == label { print $1; exit }')
+if [[ -z $part ]]; then
+  echo "==> Adding the $label partition"
+  case $(sfdisk --dump "$device" | sed -n 's/^label: //p') in
+    gpt)
+      # The image's backup GPT sits at its own end; move it to the stick's.
+      sfdisk --quiet --relocate gpt-bak-std "$device"
+      # Microsoft basic data, so Windows mounts it too.
+      echo "size=${size_mib}MiB, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name=$label" |
+        sfdisk --quiet --append "$device"
+      ;;
+    dos)
+      echo ",${size_mib}M,0c" | sfdisk --quiet --append "$device"
+      ;;
+    *) die "unexpected partition table on $device" ;;
+  esac
+  partprobe "$device"
+  udevadm settle
+  part=$(lsblk -lnpo NAME "$device" | tail -n1)
+  mkfs.vfat -F 32 -s 8 -n "$label" "$part" >/dev/null
+fi
+
+if ((${#fill[@]})); then
+  mnt=$(mktemp -d)
+  mount "$part" "$mnt"
+  trap 'umount "$mnt"; rmdir "$mnt"' EXIT
+  python3 "$root/bin/fill-stick" "$mnt" "${fill[@]}"
+  du -sh "$mnt"
+fi
+sync
+echo "==> Done: $device"

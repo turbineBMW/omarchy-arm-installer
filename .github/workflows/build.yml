@@ -1,0 +1,38 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  recipes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bin/check-recipes
+
+  iso-patches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply the patches to omarchy-iso and run its unit tests
+        run: |
+          git clone --quiet https://github.com/omacom-io/omarchy-iso "$RUNNER_TEMP/omarchy-iso"
+          cd "$RUNNER_TEMP/omarchy-iso"
+          git checkout --quiet "$(cat "$GITHUB_WORKSPACE/iso/OMARCHY_ISO_COMMIT")"
+          git -c user.name=ci -c user.email=ci@localhost am --quiet "$GITHUB_WORKSPACE"/iso/patches/*.patch
+          python3 -m unittest discover -s test/unit -p 'test_*.py'
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build the Windows on Arm executable
+        run: dotnet publish app -c Release -r win-arm64 --self-contained true -o out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OmarchyArmInstaller
+          path: out/OmarchyArmInstaller.exe

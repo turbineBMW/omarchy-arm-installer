@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Refresh app/Assets/models.json: every Arm laptop systemd-stub can pick a
+device tree for (systemd's src/boot/hwids/aa64), by its CHIDs.
+
+  bin/update-models [REF]      # a systemd tag or branch, default main
+"""
+
+import json
+import sys
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+ref = sys.argv[1] if len(sys.argv) > 1 else "main"
+
+
+def get(url):
+    request = urllib.request.Request(url, headers={"User-Agent": "omarchy-arm-installer"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.load(response)
+
+
+listing = get(f"https://api.github.com/repos/systemd/systemd/contents/src/boot/hwids/aa64?ref={ref}")
+models = []
+for entry in sorted(listing, key=lambda e: e["name"]):
+    if not entry["name"].endswith(".json"):
+        continue
+    data = get(entry["download_url"])
+    if data.get("type") != "devicetree" or not data.get("compatible"):
+        continue
+    models.append({
+        "file": entry["name"],
+        "name": data["name"],
+        "compatible": data["compatible"],
+        "hwids": sorted(h.lower() for h in data.get("hwids", [])),
+    })
+
+out = ROOT / "app" / "Assets" / "models.json"
+out.write_text(json.dumps({"source": f"systemd {ref} src/boot/hwids/aa64", "models": models}, indent=1) + "\n")
+print(f"{len(models)} models -> {out.relative_to(ROOT)}")

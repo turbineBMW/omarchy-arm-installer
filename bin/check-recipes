@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Check every recipes/*/recipe.json: the fields the app and the installer
+read, the same limits the installer applies, and that key.asc is the key
+the recipe names (needs gpg)."""
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+RESERVED = {"options", "offline", "omarchy", "core", "extra", "multilib", "alarm", "aur", "platform"}
+CHID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def check(folder: Path) -> list[str]:
+    problems = []
+    try:
+        r = json.loads((folder / "recipe.json").read_text())
+    except (OSError, ValueError) as e:
+        return [f"recipe.json: {e}"]
+    if r.get("id") != folder.name:
+        problems.append(f"id {r.get('id')!r} is not the folder name")
+    for field in ("name", "device", "description"):
+        if not isinstance(r.get(field), str) or not r[field]:
+            problems.append(f"{field} is missing")
+    if r.get("status") not in ("tested", "untested"):
+        problems.append("status is neither tested nor untested")
+    if not isinstance(r.get("maintainer"), dict) or not r["maintainer"].get("name"):
+        problems.append("maintainer.name is missing")
+    chids = (r.get("match") or {}).get("chids") or []
+    if not chids or not all(isinstance(c, str) and CHID.fullmatch(c) for c in chids):
+        problems.append("match.chids needs lower-case CHIDs")
+    repo = r.get("repo") or {}
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", repo.get("name", "")) or repo.get("name") in RESERVED:
+        problems.append("repo.name is not a name pacman and the installer accept")
+    if not re.fullmatch(r"https://\S+", repo.get("server", "")):
+        problems.append("repo.server must be https")
+    fingerprint = repo.get("keyFingerprint", "")
+    if not re.fullmatch(r"[0-9A-F]{40}", fingerprint):
+        problems.append("repo.keyFingerprint must be 40 upper-case hex digits")
+    packages = r.get("packages") or []
+    if not packages or not all(isinstance(p, str) and re.fullmatch(r"[a-z0-9@._+-]+", p) for p in packages):
+        problems.append("packages needs package names")
+    for need in r.get("firmware", []):
+        if not isinstance(need.get("folder"), str) or not need.get("files"):
+            problems.append(f"firmware entry {need} needs a folder and files")
+    key = folder / "key.asc"
+    if not key.is_file():
+        problems.append("key.asc is missing")
+    else:
+        out = subprocess.run(["gpg", "--show-keys", "--with-colons", str(key)], capture_output=True, text=True).stdout
+        fingerprints = [line.split(":")[9] for line in out.splitlines() if line.startswith("fpr:")]
+        if fingerprint not in fingerprints:
+            problems.append(f"key.asc is not key {fingerprint}")
+    return problems
+
+
+failed = False
+for folder in sorted(p for p in (ROOT / "recipes").iterdir() if p.is_dir()):
+    problems = check(folder)
+    print(f"{folder.name}: {'ok' if not problems else '; '.join(problems)}")
+    failed |= bool(problems)
+sys.exit(1 if failed else 0)

@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Fill a stick's OMARCHY_FW volume the way the Windows app does.
+
+  bin/fill-stick VOLUME [--firmware FILEREPOSITORY] [--recipe ID]
+
+FILEREPOSITORY is a Windows DriverStore/FileRepository, such as one on the
+laptop's Windows partition mounted from Linux. Without a device list to go
+by, every Qualcomm package (qc*) gives its firmware files, plus whatever the
+recipe names. ID is a folder in recipes/; its repository is downloaded,
+checked against the database, and copied with the recipe and its key.
+"""
+
+import argparse
+import fnmatch
+import gzip
+import hashlib
+import io
+import json
+import shutil
+import sys
+import tarfile
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+ARCH = "aarch64"
+# Drivers and Windows plumbing, as the app's ReportBuilder.NotFirmware.
+NOT_FIRMWARE = {".sys", ".dll", ".exe", ".cat", ".inf", ".pnf", ".mui", ".cpl", ".ocx", ".msi", ".ps1",
+                ".bat", ".cmd", ".winmd", ".pdb", ".chm", ".ico", ".lnk"}
+
+
+def copy_firmware(store: Path, volume: Path, recipe: dict | None) -> int:
+    dest = volume / "DriverStore" / "FileRepository"
+    copied = 0
+
+    def take(folder: Path, wanted) -> None:
+        nonlocal copied
+        for path in folder.rglob("*"):
+            if path.is_file() and path.suffix.lower() not in NOT_FIRMWARE and wanted(path):
+                target = dest / folder.name / path.relative_to(folder)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+                copied += 1
+
+    for folder in sorted(store.iterdir()):
+        if folder.is_dir() and folder.name.lower().startswith("qc"):
+            take(folder, lambda p: True)
+    for need in (recipe or {}).get("firmware", []):
+        files = {f.lower() for f in need["files"]}
+        found = False
+        for folder in sorted(store.iterdir()):
+            if folder.is_dir() and fnmatch.fnmatch(folder.name.lower(), need["folder"].lower()):
+                found = True
+                take(folder, lambda p: "*" in files or p.name.lower() in files)
+        if not found:
+            sys.exit(f"fill-stick: no {need['folder']} in {store}, which the recipe needs")
+    return copied
+
+
+def fetch(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "omarchy-arm-installer"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return response.read()
+
+
+def copy_recipe(recipe_dir: Path, volume: Path, cache: Path) -> int:
+    recipe = json.loads((recipe_dir / "recipe.json").read_text())
+    repo = recipe["repo"]
+    server = repo["server"].replace("$arch", ARCH)
+    database = fetch(f"{server}/{repo['name']}.db")
+    packages = []
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(database))) as tar:
+        for member in tar.getmembers():
+            if member.name.endswith("/desc"):
+                fields, key = {}, None
+                for line in tar.extractfile(member).read().decode().splitlines():
+                    if line.startswith("%") and line.endswith("%"):
+                        key = line.strip("%")
+                    elif key and line and key not in fields:
+                        fields[key] = line
+                packages.append((fields["FILENAME"], fields["SHA256SUM"]))
+    cache.mkdir(parents=True, exist_ok=True)
+    target = volume / "recipe" / "repo"
+    target.mkdir(parents=True, exist_ok=True)
+    for filename, sha in packages:
+        if "/" in filename or filename.startswith("."):
+            sys.exit(f"fill-stick: odd file name in the repository: {filename}")
+        cached = cache / filename
+        if not cached.is_file() or hashlib.sha256(cached.read_bytes()).hexdigest() != sha:
+            print(f"    {filename}")
+            data = fetch(f"{server}/{filename}")
+            if hashlib.sha256(data).hexdigest() != sha:
+                sys.exit(f"fill-stick: {filename} does not match the repository database")
+            cached.write_bytes(data)
+        shutil.copy2(cached, target / filename)
+    (target / f"{repo['name']}.db").write_bytes(database)
+    shutil.copy2(recipe_dir / "recipe.json", volume / "recipe" / "recipe.json")
+    shutil.copy2(recipe_dir / "key.asc", volume / "recipe" / "key.asc")
+    return len(packages)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("volume", type=Path)
+    parser.add_argument("--firmware", type=Path)
+    parser.add_argument("--recipe")
+    args = parser.parse_args()
+    recipe_dir = ROOT / "recipes" / args.recipe if args.recipe else None
+    if recipe_dir and not (recipe_dir / "recipe.json").is_file():
+        sys.exit(f"fill-stick: no recipe {args.recipe} in recipes/")
+    recipe = json.loads((recipe_dir / "recipe.json").read_text()) if recipe_dir else None
+    if args.firmware:
+        print(f"==> Firmware from {args.firmware}")
+        print(f"    {copy_firmware(args.firmware, args.volume, recipe)} files")
+    if recipe_dir:
+        print(f"==> Recipe {args.recipe}")
+        count = copy_recipe(recipe_dir, args.volume, ROOT / ".cache" / "recipes" / args.recipe)
+        print(f"    {count} packages")
+
+
+if __name__ == "__main__":
+    main()
