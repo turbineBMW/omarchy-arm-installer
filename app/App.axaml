@@ -1,0 +1,100 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="SurfaceUsbCreator.App"
+             RequestedThemeVariant="Dark">
+  <Application.Resources>
+    <!-- Omarchy's default theme (Tokyo Night) -->
+    <Color x:Key="Background">#1a1b26</Color>
+    <Color x:Key="Surface">#24283b</Color>
+    <Color x:Key="Line">#414868</Color>
+    <Color x:Key="Text">#c0caf5</Color>
+    <Color x:Key="Dim">#787c99</Color>
+    <Color x:Key="Accent">#7aa2f7</Color>
+    <Color x:Key="Good">#9ece6a</Color>
+    <Color x:Key="Bad">#f7768e</Color>
+    <Color x:Key="Warn">#e0af68</Color>
+    <SolidColorBrush x:Key="BackgroundBrush" Color="{StaticResource Background}" />
+    <SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource Surface}" />
+    <SolidColorBrush x:Key="LineBrush" Color="{StaticResource Line}" />
+    <SolidColorBrush x:Key="TextBrush" Color="{StaticResource Text}" />
+    <SolidColorBrush x:Key="DimBrush" Color="{StaticResource Dim}" />
+    <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource Accent}" />
+    <SolidColorBrush x:Key="GoodBrush" Color="{StaticResource Good}" />
+    <SolidColorBrush x:Key="BadBrush" Color="{StaticResource Bad}" />
+    <SolidColorBrush x:Key="WarnBrush" Color="{StaticResource Warn}" />
+    <FontFamily x:Key="Mono">avares://SurfaceUsbCreator/Assets/Fonts#JetBrainsMono Nerd Font</FontFamily>
+  </Application.Resources>
+
+  <Application.Styles>
+    <FluentTheme>
+      <FluentTheme.Palettes>
+        <ColorPaletteResources x:Key="Dark" Accent="#7aa2f7" RegionColor="#1a1b26" />
+      </FluentTheme.Palettes>
+    </FluentTheme>
+
+    <Style Selector="Window">
+      <Setter Property="FontFamily" Value="{StaticResource Mono}" />
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+      <Setter Property="Background" Value="{StaticResource BackgroundBrush}" />
+    </Style>
+
+    <Style Selector="TextBlock.h1">
+      <Setter Property="FontSize" Value="22" />
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="Margin" Value="0,0,0,6" />
+    </Style>
+    <Style Selector="TextBlock.dim">
+      <Setter Property="Foreground" Value="{StaticResource DimBrush}" />
+    </Style>
+    <Style Selector="TextBlock.body">
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="LineHeight" Value="21" />
+    </Style>
+
+    <!-- Flat, outlined buttons; the primary one filled with the accent. -->
+    <Style Selector="Button">
+      <Setter Property="FontFamily" Value="{StaticResource Mono}" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Padding" Value="16,7" />
+    </Style>
+    <Style Selector="Button:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+    </Style>
+    <Style Selector="Button.primary">
+      <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource BackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+      <Setter Property="FontWeight" Value="Bold" />
+    </Style>
+    <Style Selector="Button.primary:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{StaticResource TextBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource BackgroundBrush}" />
+    </Style>
+    <Style Selector="Button:disabled /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource DimBrush}" />
+    </Style>
+
+    <Style Selector="Border.panel">
+      <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="14,10" />
+    </Style>
+
+    <Style Selector="ProgressBar">
+      <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+      <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Height" Value="6" />
+    </Style>
+  </Application.Styles>
+</Application>
