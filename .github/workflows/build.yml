@@ -13,7 +13,11 @@ jobs:
 
   iso-patches:
     runs-on: ubuntu-latest
+    # Arch, as root, as on the live ISO: some installer code reads /root and
+    # the console keymaps kbd ships.
+    container: archlinux:latest
     steps:
+      - run: pacman -Syu --noconfirm --needed git python kbd systemd
       - uses: actions/checkout@v4
       - name: Apply the patches to omarchy-iso and run its unit tests
         run: |
@@ -21,8 +25,7 @@ jobs:
           cd "$RUNNER_TEMP/omarchy-iso"
           git checkout --quiet "$(cat "$GITHUB_WORKSPACE/iso/OMARCHY_ISO_COMMIT")"
           git -c user.name=ci -c user.email=ci@localhost am --quiet "$GITHUB_WORKSPACE"/iso/patches/*.patch
-          # Some installer code looks under /root, as it does on the live ISO.
-          sudo python3 -m unittest discover -s test/unit -p 'test_*.py'
+          python3 -m unittest discover -s test/unit -p 'test_*.py'
 
   app:
     runs-on: ubuntu-latest
