@@ -4,6 +4,8 @@
 # and a SHA-256 of the whole image.
 #
 #   bin/publish-iso ISO [WINDOWS_EXE]
+#
+# PRERELEASE=1 marks it untested.
 set -euo pipefail
 
 root=$(realpath "${BASH_SOURCE[0]%/*}/..")
@@ -31,7 +33,9 @@ assets=("$work/$name.sha256" "$work/$name".part-*)
 [[ -z $app ]] || assets+=("$app")
 
 echo "==> Release $tag on $repo"
+flags=()
+[[ ${PRERELEASE:-} != 1 ]] || flags=(--prerelease)
 gh release view "$tag" -R "$repo" >/dev/null 2>&1 ||
-  gh release create "$tag" -R "$repo" --title "Installer $date" --notes \
+  gh release create "$tag" -R "$repo" "${flags[@]}" --title "Installer $date${PRERELEASE:+ (untested)}" --notes \
 "The Omarchy installer for Arm laptops, $date. Run OmarchyArmInstaller.exe in the laptop's Windows: it downloads these parts, joins and checks them, and puts the laptop's firmware and any device recipe on the stick. From Linux: cat the parts in order into $name, check it against $name.sha256, then bin/make-usb."
 gh release upload "$tag" -R "$repo" --clobber "${assets[@]}"
