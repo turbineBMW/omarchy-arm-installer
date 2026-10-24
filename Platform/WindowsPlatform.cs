@@ -130,6 +130,19 @@ public sealed class WindowsPlatform : IPlatform
                 foreach (var volume in volumes) locked.Add(LockAndDismount(volume));
 
                 using var target = Native.Open($@"\\.\PhysicalDrive{disk.Number}", write: true);
+                // Forget the stick's partitions before writing over them. With an
+                // earlier image's layout still registered, Windows refused the very
+                // first write ("Incorrect function") even with every volume
+                // dismounted; this is what deleting the partitions by hand does.
+                if (Native.Ioctl(target, Native.IOCTL_DISK_DELETE_DRIVE_LAYOUT, throwOnError: false))
+                {
+                    Native.Ioctl(target, Native.IOCTL_DISK_UPDATE_PROPERTIES, throwOnError: false);
+                    Log.Info("Old partition layout deleted");
+                }
+                else
+                {
+                    Log.Info($"Could not delete the old partition layout (Windows error {Marshal.GetLastWin32Error()}); writing anyway");
+                }
                 WriteAndVerify(target, image, length, disk.Size, progress, ct);
                 // Let Windows read the new partition table.
                 Native.Ioctl(target, Native.IOCTL_DISK_UPDATE_PROPERTIES);
@@ -293,6 +306,7 @@ static class Native
     public const uint FSCTL_LOCK_VOLUME = 0x00090018;
     public const uint FSCTL_DISMOUNT_VOLUME = 0x00090020;
     public const uint IOCTL_DISK_UPDATE_PROPERTIES = 0x00070140;
+    public const uint IOCTL_DISK_DELETE_DRIVE_LAYOUT = 0x0007C100;
 
     const uint GenericRead = 0x80000000, GenericWrite = 0x40000000;
     const uint ShareReadWrite = 0x00000001 | 0x00000002;

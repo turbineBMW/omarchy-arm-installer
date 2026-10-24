@@ -282,7 +282,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public async Task CreateAsync()
     {
         if (SelectedDisk is null || ImagePath is null) return;
-        var disk = SelectedDisk;
+        // Windows can renumber a stick that was unplugged and plugged back in.
+        var chosen = SelectedDisk;
+        UsbDisk? disk = null;
+        try
+        {
+            disk = (await platform.ListUsbDisksAsync(CancellationToken.None))
+                .FirstOrDefault(d => d.Serial == chosen.Serial && d.Size == chosen.Size);
+        }
+        catch (Exception e)
+        {
+            Fail("finding the USB stick again", e);
+            return;
+        }
+        if (disk is null)
+        {
+            Error = "The USB stick is not plugged in any more. Plug it back in, wait a few seconds, go Back and choose Look again.";
+            Log.Info($"Stick {chosen.Description} ({chosen.Serial}) not found before writing");
+            return;
+        }
         var image = ImagePath;
         CreateLog.Clear();
         await RunAsync(async ct =>
@@ -364,8 +382,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         Log.Error(context, e);
         failedStep = StepTitle;
-        Error = e.Message;
+        Error = Explain(e);
     }
+
+    /// Windows' wording for the failures a stick most often meets, put plainly.
+    static string Explain(Exception e) => (e.HResult & 0xFFFF) switch
+    {
+        // ERROR_DEV_NOT_EXIST, ERROR_DEVICE_NOT_CONNECTED, ERROR_NO_SUCH_DEVICE
+        55 or 1167 or 433 => "The USB stick was disconnected while it was being written. Plug it back in, wait a few seconds, " +
+                             "go Back, choose Look again, and create it again.",
+        // ERROR_INVALID_FUNCTION, ERROR_ACCESS_DENIED, ERROR_WRITE_PROTECT
+        1 or 5 or 19 when e is IOException => $"Windows would not let the creator write to the stick ({e.Message.TrimEnd('.')}). " +
+                             "Unplug it, plug it back in and try again; if it keeps failing, open the log and report it.",
+        _ => e.Message,
+    };
 
     public string LogPath => Log.FilePath;
 
