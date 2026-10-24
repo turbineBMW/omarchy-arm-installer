@@ -22,7 +22,7 @@ def check(folder: Path) -> list[str]:
         return [f"recipe.json: {e}"]
     if r.get("id") != folder.name:
         problems.append(f"id {r.get('id')!r} is not the folder name")
-    for field in ("name", "device", "description"):
+    for field in ("name", "device"):
         if not isinstance(r.get(field), str) or not r[field]:
             problems.append(f"{field} is missing")
     if r.get("status") not in ("tested", "untested"):

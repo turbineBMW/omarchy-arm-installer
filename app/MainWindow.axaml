@@ -201,17 +201,41 @@
 
         <!-- Extras -->
         <StackPanel Classes="step" IsVisible="{Binding IsExtrasStep}">
-          <TextBlock Text="{Binding Recipe.Name}" FontWeight="Bold" />
-          <TextBlock Classes="body" Text="{Binding Recipe.Description}" />
-          <TextBlock Classes="body" Text="{Binding RecipeFeatures}" />
-          <Border Classes="panel">
-            <TextBlock Classes="dim body" FontSize="12" Text="{Binding RecipeSource}" />
+          <TextBlock Classes="body" Text="Some laptops need more than Omarchy carries yet: a kernel with fixes still on their way upstream, tuning, plugins for their hardware. People who maintain those for a model publish them as a package repository, and a recipe in this installer names it, so you can add it while you install." />
+          <TextBlock Text="{Binding RecipeTitle}" FontWeight="Bold" />
+          <TextBlock Classes="dim body" Text="Checking the repository and its signatures…" IsVisible="{Binding RecipeLoading}" />
+          <TextBlock Classes="body warn" Text="{Binding RecipeProblem}" IsVisible="{Binding HasRecipeProblem}" />
+          <TextBlock Classes="body warn" Text="{Binding RecipeRetiredText}" IsVisible="{Binding RecipeRetired}" />
+          <TextBlock Classes="body" Text="{Binding RecipeSummary}" IsVisible="{Binding CanUseRecipe}" />
+          <ItemsControl ItemsSource="{Binding RecipeInfoPackages}" IsVisible="{Binding CanUseRecipe}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="core:RecipeInfoPackage">
+                <StackPanel Spacing="2" Margin="0,0,0,8">
+                  <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock Text="{Binding Name}" FontWeight="Bold" />
+                    <TextBlock Text="replaces Omarchy's" Classes="warn" FontSize="12" VerticalAlignment="Center"
+                               IsVisible="{Binding Replaces}" />
+                  </StackPanel>
+                  <TextBlock Classes="dim body" FontSize="12" Text="{Binding Description}" />
+                  <TextBlock Classes="dim" FontSize="12" Text="{Binding Upstream, StringFormat='On its way into Omarchy: {0}'}"
+                             TextWrapping="Wrap" IsVisible="{Binding Upstream, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <Border Classes="panel" BorderBrush="{StaticResource WarnBrush}" IsVisible="{Binding CanUseRecipe}">
+            <StackPanel Spacing="10">
+              <TextBlock Text="From outside Omarchy" FontWeight="Bold" Foreground="{StaticResource WarnBrush}" />
+              <TextBlock Classes="body" Text="{Binding RecipeWarning}" />
+              <SelectableTextBlock Classes="dim" FontSize="12" Text="{Binding RecipeSource}" TextWrapping="Wrap" />
+              <TextBlock Classes="ok body" FontSize="12" Text="{Binding RecipeTrust}" />
+            </StackPanel>
           </Border>
-          <TextBlock Classes="dim body" FontSize="12" Text="{Binding RecipeDownload}" />
-          <CheckBox IsChecked="{Binding UseRecipe}" Content="Install these extras with Omarchy" />
+          <TextBlock Classes="dim body" FontSize="12" Text="{Binding RecipeDownload}" IsVisible="{Binding CanUseRecipe}" />
+          <CheckBox IsChecked="{Binding UseRecipe}" IsEnabled="{Binding CanUseRecipe}" Content="Add these extras to Omarchy" />
           <TextBlock Classes="body warn" IsVisible="{Binding StickTooSmall}"
                      Text="The firmware and the extras together are more than the stick's firmware partition holds." />
-          <TextBlock Classes="dim body" Text="They come from their maintainer, not from Omarchy, and keep updating from that repository until Omarchy has the same. Leave them out to install Omarchy as it comes." />
+          <TextBlock Classes="dim body" Text="Leave them out to install Omarchy as it comes." />
         </StackPanel>
 
         <!-- Installer -->

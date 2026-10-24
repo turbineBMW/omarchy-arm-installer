@@ -1,0 +1,657 @@
+From b65e14d6bc58006ab16953dd9a18e7f63eb3e13b Mon Sep 17 00:00:00 2001
+From: Brandon Williams <turbine.bmw@gmail.com>
+Date: Sat, 24 Oct 2026 17:25:02 -0400
+Subject: [PATCH 4/4] Check device recipes' signatures, and let the system
+ remove them
+
+A recipe's packages now install only with valid signatures: the media
+must carry the repository database's signature, and pacman checks it and
+every package against a keyring that holds the recipe's key and nothing
+else, made only when that key is the one the recipe names. A recipe whose
+key does not match is left out entirely.
+
+The installed system gets omarchy-recipe. It says what the recipe is and
+that it is not part of Omarchy, lists what came from it and which of
+Omarchy's packages it replaces, and fetches the repository's signed
+description daily. A pacman hook passes on the maintainer's notice once
+the repository is retired, and omarchy-recipe remove takes it out of
+pacman.conf, drops its key, reinstalls Omarchy's own build of every
+package Omarchy has, and with --purge removes the ones only it had.
+
+Tested: test/all passes, with a new test of omarchy-recipe against
+stubbed pacman, and keyring tests with a real ed25519 key.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../share/omarchy-iso/orchestrator/recipe.py  | 122 +++++++++-------
+ .../share/omarchy-iso/recipe/omarchy-recipe   | 136 ++++++++++++++++++
+ .../recipe/omarchy-recipe-check.service       |   9 ++
+ .../recipe/omarchy-recipe-check.timer         |  10 ++
+ .../recipe/omarchy-recipe-firstboot           |  13 ++
+ .../recipe/omarchy-recipe-firstboot.service   |  15 ++
+ .../omarchy-iso/recipe/omarchy-recipe.hook    |  11 ++
+ test/unit/omarchy-recipe-test.sh              |  88 ++++++++++++
+ test/unit/test_device_recipe.py               |  61 ++++++++
+ 9 files changed, 412 insertions(+), 53 deletions(-)
+ create mode 100755 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe
+ create mode 100644 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.service
+ create mode 100644 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.timer
+ create mode 100755 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot
+ create mode 100644 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot.service
+ create mode 100644 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe.hook
+ create mode 100644 test/unit/omarchy-recipe-test.sh
+
+diff --git a/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py b/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py
+index f1007ab..3b3c16d 100644
+--- a/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py
++++ b/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py
+@@ -5,12 +5,19 @@ Windows) can put a recipe on the OMARCHY_FW partition:
+ 
+     recipe/recipe.json      which repository and packages, and its key
+     recipe/key.asc          the repository's signing key
+-    recipe/repo/            the packages, and the repository database
++    recipe/info.json(.sig)  the repository's signed description of itself
++    recipe/repo/            the packages, and the signed repository database
+ 
+ The packages are installed with the system, their dependencies coming from
+-the image's offline mirror; the repository is then configured above
+-[omarchy] for updates. When something they need is not on the media, a
+-first-boot service installs them once the machine is online instead.
++the image's offline mirror, and pacman checks every signature against a
++keyring holding the recipe's key and nothing else. The repository is then
++configured above [omarchy] for updates. When something they need is not on
++the media, a first-boot service installs them once the machine is online
++instead.
++
++The installed system gets omarchy-recipe, which shows what the recipe is,
++fetches the repository's description daily, says on updates when its
++maintainer has retired it, and removes it again.
+ """
+ 
+ from __future__ import annotations
+@@ -30,6 +37,8 @@ MEDIA_MOUNT = Path("/run/omarchy/recipe-media")
+ TARGET_MEDIA = "var/cache/omarchy/recipe"
+ TARGET_RECIPE = "etc/omarchy/recipe"
+ FIRSTBOOT = "omarchy-recipe-firstboot"
++# The tool, its pacman hook and units, copied into the target.
++FILES = Path("/usr/share/omarchy-iso/recipe")
+ BEGIN = "# BEGIN OMARCHY DEVICE RECIPE"
+ END = "# END OMARCHY DEVICE RECIPE"
+ RESERVED_REPOS = {"options", "offline", "omarchy", "core", "extra", "multilib", "alarm", "aur", "platform"}
+@@ -58,8 +67,9 @@ def read(folder: Path) -> dict | None:
+         return None
+     if not all(isinstance(p, str) and re.fullmatch(r"[a-z0-9@._+-]+", p) for p in packages):
+         return None
+-    if not (folder / "key.asc").is_file() or not (folder / "repo" / f"{name}.db").is_file():
+-        return None
++    for required in ("key.asc", f"repo/{name}.db", f"repo/{name}.db.sig"):
++        if not (folder / required).is_file():
++            return None
+     return recipe
+ 
+ 
+@@ -90,15 +100,30 @@ def offline_config(recipe: dict) -> str:
+     first, so its packages win, then the offline mirror."""
+     name = recipe["repo"]["name"]
+     return (
+-        "[options]\nArchitecture = auto\nSigLevel = Required DatabaseOptional\n"
+-        "LocalFileSigLevel = Optional\nNoProgressBar\n\n"
+-        # The media's packages are checked against the database by the
+-        # creator; signatures are checked from the first online sync on.
+-        f"[{name}]\nSigLevel = Never\nServer = file:///{TARGET_MEDIA}/recipe/repo\n\n"
++        "[options]\nArchitecture = auto\nNoProgressBar\n"
++        # A keyring with the recipe's key and nothing else: whatever the
++        # media carries must be signed by the key the recipe pins.
++        f"GPGDir = /{TARGET_RECIPE}/gnupg\n\n"
++        f"[{name}]\nSigLevel = Required DatabaseRequired\nServer = file:///{TARGET_MEDIA}/recipe/repo\n\n"
+         "[offline]\nSigLevel = Never\nServer = file:///var/cache/omarchy/mirror/offline/\n"
+     )
+ 
+ 
++def make_keyring(home: Path, key: Path, fingerprint: str) -> bool:
++    """A GnuPG home trusting only the recipe's key, for pacman's GPGDir and
++    omarchy-recipe's checks."""
++    home.mkdir(parents=True, exist_ok=True)
++    home.chmod(0o700)
++    gpg = ["gpg", "--homedir", str(home), "--batch", "--quiet"]
++    if subprocess.run([*gpg, "--import", str(key)], check=False).returncode != 0:
++        return False
++    listed = subprocess.run([*gpg, "--with-colons", "--list-keys"], capture_output=True, text=True, check=False).stdout
++    if f"fpr:::::::::{fingerprint}:" not in listed:
++        return False
++    return subprocess.run([*gpg, "--import-ownertrust"], input=f"{fingerprint}:6:\n", text=True,
++                          check=False).returncode == 0
++
++
+ def online_section(recipe: dict) -> str:
+     repo = recipe["repo"]
+     return f"{BEGIN}\n[{repo['name']}]\nServer = {repo['server']}\n{END}\n"
+@@ -123,37 +148,31 @@ def _targets(recipe: dict, available: list[str], installed: set[str]) -> list[st
+     return [f"{name}/{p}" for p in wanted if p in available]
+ 
+ 
+-FIRSTBOOT_SCRIPT = """#!/bin/bash
+-# Installs this machine's device recipe once it is online; the install could
+-# not, because something the packages need was not on the install media.
+-set -u
+-recipe=/etc/omarchy/recipe
+-read -r repo < "$recipe/repo"
+-read -r fingerprint < "$recipe/fingerprint"
+-if ! pacman-key --list-keys "$fingerprint" >/dev/null 2>&1; then
+-  pacman-key --add "$recipe/key.asc" && pacman-key --lsign-key "$fingerprint" || exit 1
+-fi
+-mapfile -t packages < "$recipe/packages"
+-pacman -Sy --noconfirm --needed "${packages[@]/#/$repo/}" || exit 1
+-rm -f "$recipe/pending"
+-"""
++def _install_files(target: Path) -> None:
++    """omarchy-recipe, its pacman hook, the daily check and the first-boot
++    unit, with the check enabled."""
++    copies = {
++        "omarchy-recipe": ("usr/local/bin/omarchy-recipe", 0o755),
++        FIRSTBOOT: (f"usr/local/bin/{FIRSTBOOT}", 0o755),
++        "omarchy-recipe.hook": ("etc/pacman.d/hooks/90-omarchy-recipe.hook", 0o644),
++        "omarchy-recipe-check.service": ("etc/systemd/system/omarchy-recipe-check.service", 0o644),
++        "omarchy-recipe-check.timer": ("etc/systemd/system/omarchy-recipe-check.timer", 0o644),
++        f"{FIRSTBOOT}.service": (f"etc/systemd/system/{FIRSTBOOT}.service", 0o644),
++    }
++    for name, (dest, mode) in copies.items():
++        path = target / dest
++        path.parent.mkdir(parents=True, exist_ok=True)
++        shutil.copy2(FILES / name, path)
++        path.chmod(mode)
++    _enable(target, "timers.target", "omarchy-recipe-check.timer")
+ 
+-FIRSTBOOT_UNIT = f"""[Unit]
+-Description=Install this machine's device recipe
+-Wants=network-online.target
+-After=network-online.target
+-ConditionPathExists=/{TARGET_RECIPE}/pending
+-StartLimitIntervalSec=0
+ 
+-[Service]
+-Type=oneshot
+-ExecStart=/usr/lib/omarchy/{FIRSTBOOT}
+-Restart=on-failure
+-RestartSec=5min
+-
+-[Install]
+-WantedBy=multi-user.target
+-"""
++def _enable(target: Path, wanted_by: str, unit: str) -> None:
++    wants = target / "etc/systemd/system" / f"{wanted_by}.wants"
++    wants.mkdir(parents=True, exist_ok=True)
++    link = wants / unit
++    if not link.exists():
++        link.symlink_to(f"/etc/systemd/system/{unit}")
+ 
+ 
+ def _chroot(ctx: InstallContext, *cmd: str, capture: bool = False) -> subprocess.CompletedProcess:
+@@ -173,8 +192,15 @@ def install(ctx: InstallContext) -> None:
+     name = recipe["repo"]["name"]
+     saved = ctx.target / TARGET_RECIPE
+     saved.mkdir(parents=True, exist_ok=True)
+-    shutil.copy2(MEDIA_MOUNT / "recipe" / "recipe.json", saved / "recipe.json")
+-    shutil.copy2(MEDIA_MOUNT / "recipe" / "key.asc", saved / "key.asc")
++    for name in ("recipe.json", "key.asc", "info.json", "info.json.sig"):
++        if (MEDIA_MOUNT / "recipe" / name).is_file():
++            shutil.copy2(MEDIA_MOUNT / "recipe" / name, saved / name)
++    # Nothing from a recipe whose key is not the one it names.
++    if not make_keyring(saved / "gnupg", saved / "key.asc", recipe["repo"]["keyFingerprint"]):
++        info("› the device recipe's key is not the one it names; leaving the recipe out")
++        shutil.rmtree(saved, ignore_errors=True)
++        return
++    _install_files(ctx.target)
+     (saved / "repo").write_text(name + "\n")
+     (saved / "fingerprint").write_text(recipe["repo"]["keyFingerprint"] + "\n")
+ 
+@@ -217,14 +243,4 @@ def install(ctx: InstallContext) -> None:
+         (saved / "packages").write_text("\n".join(recipe["packages"]) + "\n")
+     info("› the device recipe finishes on first boot, once the machine is online")
+     (saved / "pending").touch()
+-    script = ctx.target / "usr/lib/omarchy" / FIRSTBOOT
+-    script.parent.mkdir(parents=True, exist_ok=True)
+-    script.write_text(FIRSTBOOT_SCRIPT)
+-    script.chmod(0o755)
+-    unit = ctx.target / "etc/systemd/system" / f"{FIRSTBOOT}.service"
+-    unit.write_text(FIRSTBOOT_UNIT)
+-    wants = ctx.target / "etc/systemd/system/multi-user.target.wants"
+-    wants.mkdir(parents=True, exist_ok=True)
+-    link = wants / f"{FIRSTBOOT}.service"
+-    if not link.exists():
+-        link.symlink_to(f"/etc/systemd/system/{FIRSTBOOT}.service")
++    _enable(ctx.target, "multi-user.target", f"{FIRSTBOOT}.service")
+diff --git a/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe
+new file mode 100755
+index 0000000..c1a55e5
+--- /dev/null
++++ b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe
+@@ -0,0 +1,136 @@
++#!/bin/bash
++# This machine's device recipe: a package repository from outside Omarchy,
++# added while Omarchy was installed from a stick the Omarchy Arm installer
++# made. It replaces some of Omarchy's packages with its maintainer's until
++# Omarchy has the same.
++#
++#   omarchy-recipe                 what it is, and what came from it
++#   omarchy-recipe check           fetch its signed description (daily timer)
++#   omarchy-recipe remove [--purge] [--yes]
++#                                  take the repository out of pacman and go
++#                                  back to Omarchy's own packages; --purge
++#                                  also removes the ones only it had
++set -euo pipefail
++
++# The paths can be moved for tests.
++recipe=${OMARCHY_RECIPE_DIR:-/etc/omarchy/recipe}
++state=${OMARCHY_RECIPE_STATE:-/var/lib/omarchy/recipe}
++conf=${PACMAN_CONF:-/etc/pacman.conf}
++begin="# BEGIN OMARCHY DEVICE RECIPE"
++end="# END OMARCHY DEVICE RECIPE"
++
++die() { printf 'omarchy-recipe: %s\n' "$*" >&2; exit 1; }
++field() { jq -r "$1 // empty" "$recipe/recipe.json"; }
++info_file() { if [[ -f $state/info.json ]]; then echo "$state/info.json"; else echo "$recipe/info.json"; fi; }
++info() { local f; f=$(info_file); [[ -f $f ]] && jq -r "$1 // empty" "$f"; }
++configured() { grep -qxF "$begin" "$conf"; }
++root() { ((EUID == 0)) || [[ -n ${OMARCHY_RECIPE_DIR:-} ]] || die "run it as root: sudo omarchy-recipe $*"; }
++
++[[ -f $recipe/recipe.json ]] || { echo "This machine has no device recipe."; exit 0; }
++name=$(field .name)
++repo=$(field .repo.name)
++fingerprint=$(field .repo.keyFingerprint)
++server=$(field .repo.server)
++server=${server//\$arch/$(uname -m)}
++
++installed_from_repo() {
++  { pacman -Slq "$repo" 2>/dev/null || true; } | while read -r p; do
++    if pacman -Qq "$p" >/dev/null 2>&1; then echo "$p"; fi
++  done
++}
++
++status() {
++  echo "$name, from $(field .maintainer.name): not part of Omarchy"
++  echo "  Repository  $server"
++  echo "  Key         $fingerprint"
++  if ! configured; then
++    echo "  Removed: pacman no longer uses it."
++    return
++  fi
++  if [[ $(info .status) == retired ]]; then
++    echo "  Retired by its maintainer: $(info .retiredMessage)"
++    echo "  Go back to Omarchy's own packages with: sudo omarchy-recipe remove"
++  fi
++  echo "  Installed from it:"
++  installed_from_repo | while read -r p; do
++    replaces=$(jq -r --arg p "$p" '.packages[]? | select(.name == $p) | .replaces' "$(info_file)" 2>/dev/null || true)
++    printf '    %s%s\n' "$p" "$([[ $replaces == true ]] && echo "  (replaces Omarchy's)")"
++  done
++}
++
++check() {
++  root check
++  configured || return 0
++  local tmp
++  tmp=$(mktemp -d)
++  trap 'rm -rf "$tmp"' RETURN
++  curl -fsSL --max-time 60 -o "$tmp/info.json" "$server/$repo.recipe.json" &&
++    curl -fsSL --max-time 60 -o "$tmp/info.json.sig" "$server/$repo.recipe.json.sig" ||
++    die "could not fetch the repository's description from $server"
++  gpg --homedir "$recipe/gnupg" --batch --status-fd 1 --verify "$tmp/info.json.sig" "$tmp/info.json" 2>/dev/null |
++    grep -qE "^\[GNUPG:\] VALIDSIG .* $fingerprint\$" ||
++    die "the repository's description is not signed by key $fingerprint"
++  jq -e --arg r "$repo" '.format == 1 and .repo == $r' "$tmp/info.json" >/dev/null ||
++    die "that is not this repository's description"
++  install -D -m 644 "$tmp/info.json" "$state/info.json"
++}
++
++notice() {
++  configured && [[ $(info .status) == retired ]] || return 0
++  echo ":: $name: its maintainer has retired this repository. $(info .retiredMessage)"
++  echo ":: Go back to Omarchy's own packages with: sudo omarchy-recipe remove"
++}
++
++remove() {
++  root remove
++  local purge=0 yes=0
++  for arg in "$@"; do
++    case $arg in
++      --purge) purge=1 ;;
++      --yes) yes=1 ;;
++      *) die "unknown option $arg" ;;
++    esac
++  done
++  mapfile -t from < <(installed_from_repo)
++  echo "Removing $name ($repo) from pacman."
++  ((${#from[@]})) && echo "Installed from it: ${from[*]}"
++  if ((!yes)); then
++    read -r -p "Continue? [y/N] " answer
++    [[ $answer == [yY]* ]] || exit 1
++  fi
++
++  awk -v b="$begin" -v e="$end" '$0 == b { skip = 1 } !skip { print } $0 == e { skip = 0 }' "$conf" >"$conf.recipe-new"
++  cat "$conf.recipe-new" >"$conf"
++  rm -f "$conf.recipe-new"
++  pacman-key --delete "$fingerprint" >/dev/null 2>&1 || true
++  pacman -Sy
++
++  # What Omarchy has too goes back to Omarchy's build of it; the rest stays,
++  # without updates, unless --purge.
++  local back=() only=() p
++  for p in "${from[@]}"; do
++    if pacman -Sp --print-format %n "$p" >/dev/null 2>&1; then back+=("$p"); else only+=("$p"); fi
++  done
++  ((${#back[@]})) && pacman -S --noconfirm "${back[@]}"
++  if ((${#only[@]})); then
++    if ((purge)); then
++      pacman -Rns --noconfirm "${only[@]}"
++    else
++      echo "Kept, but no longer updated: ${only[*]}"
++      echo "Remove them with: sudo pacman -Rns ${only[*]}"
++    fi
++  fi
++
++  systemctl disable --now omarchy-recipe-check.timer omarchy-recipe-firstboot.service >/dev/null 2>&1 || true
++  rm -rf "$state"
++  mv "$recipe" "$recipe.removed-$(date +%Y%m%d%H%M%S)"
++  echo "Done: $name is removed."
++}
++
++case ${1:-} in
++  "" | status) status ;;
++  check) check ;;
++  notice) notice ;;
++  remove) shift; remove "$@" ;;
++  *) die "usage: omarchy-recipe [status|check|remove [--purge] [--yes]]" ;;
++esac
+diff --git a/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.service b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.service
+new file mode 100644
+index 0000000..5a0365f
+--- /dev/null
++++ b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.service
+@@ -0,0 +1,9 @@
++[Unit]
++Description=Fetch the device recipe repository's description
++Wants=network-online.target
++After=network-online.target
++ConditionPathExists=/etc/omarchy/recipe/recipe.json
++
++[Service]
++Type=oneshot
++ExecStart=/usr/local/bin/omarchy-recipe check
+diff --git a/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.timer b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.timer
+new file mode 100644
+index 0000000..3ff12cd
+--- /dev/null
++++ b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.timer
+@@ -0,0 +1,10 @@
++[Unit]
++Description=Check the device recipe repository daily
++
++[Timer]
++OnCalendar=daily
++RandomizedDelaySec=2h
++Persistent=true
++
++[Install]
++WantedBy=timers.target
+diff --git a/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot
+new file mode 100755
+index 0000000..9a9d16c
+--- /dev/null
++++ b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot
+@@ -0,0 +1,13 @@
++#!/bin/bash
++# Installs this machine's device recipe once it is online; the install could
++# not, because something the packages need was not on the install media.
++set -u
++recipe=/etc/omarchy/recipe
++read -r repo < "$recipe/repo"
++read -r fingerprint < "$recipe/fingerprint"
++if ! pacman-key --list-keys "$fingerprint" >/dev/null 2>&1; then
++  pacman-key --add "$recipe/key.asc" && pacman-key --lsign-key "$fingerprint" || exit 1
++fi
++mapfile -t packages < "$recipe/packages"
++pacman -Sy --noconfirm --needed "${packages[@]/#/$repo/}" || exit 1
++rm -f "$recipe/pending"
+diff --git a/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot.service b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot.service
+new file mode 100644
+index 0000000..4684bed
+--- /dev/null
++++ b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot.service
+@@ -0,0 +1,15 @@
++[Unit]
++Description=Install this machine's device recipe
++Wants=network-online.target
++After=network-online.target
++ConditionPathExists=/etc/omarchy/recipe/pending
++StartLimitIntervalSec=0
++
++[Service]
++Type=oneshot
++ExecStart=/usr/local/bin/omarchy-recipe-firstboot
++Restart=on-failure
++RestartSec=5min
++
++[Install]
++WantedBy=multi-user.target
+diff --git a/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe.hook b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe.hook
+new file mode 100644
+index 0000000..bd7ea75
+--- /dev/null
++++ b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe.hook
+@@ -0,0 +1,11 @@
++# Tells whoever updates when the device recipe's maintainer has retired it.
++[Trigger]
++Operation = Install
++Operation = Upgrade
++Type = Package
++Target = *
++
++[Action]
++Description = Checking the device recipe...
++When = PostTransaction
++Exec = /usr/local/bin/omarchy-recipe notice
+diff --git a/test/unit/omarchy-recipe-test.sh b/test/unit/omarchy-recipe-test.sh
+new file mode 100644
+index 0000000..de69d8e
+--- /dev/null
++++ b/test/unit/omarchy-recipe-test.sh
+@@ -0,0 +1,88 @@
++#!/bin/bash
++# omarchy-recipe on an installed system: what it shows, the retirement
++# notice, and removal, with pacman, pacman-key and systemctl stubbed.
++set -euo pipefail
++
++ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
++TOOL=$ROOT/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe
++work=$(mktemp -d)
++trap 'rm -rf "$work"' EXIT
++fail() { echo "FAIL: $*" >&2; exit 1; }
++
++export OMARCHY_RECIPE_DIR=$work/recipe OMARCHY_RECIPE_STATE=$work/state PACMAN_CONF=$work/pacman.conf
++mkdir -p "$work/bin"
++setup() {
++rm -rf "$OMARCHY_RECIPE_DIR" "$OMARCHY_RECIPE_DIR".removed-* "$OMARCHY_RECIPE_STATE"
++mkdir -p "$OMARCHY_RECIPE_DIR"
++: >"$work/calls"
++cat >"$OMARCHY_RECIPE_DIR/recipe.json" <<'JSON'
++{"name": "Surface Pro 11 extras", "maintainer": {"name": "Someone"},
++ "repo": {"name": "surface-pro-11", "server": "https://example.invalid/$arch",
++          "keyFingerprint": "6CAC3F8AE94AC7BDCFB7A9017C8D01DD008051AB"},
++ "packages": ["omarchy-surface-pro-11"]}
++JSON
++cat >"$OMARCHY_RECIPE_DIR/info.json" <<'JSON'
++{"format": 1, "repo": "surface-pro-11", "name": "Surface Pro 11 extras", "status": "active",
++ "packages": [{"name": "linux-omarchy", "replaces": true, "description": "k"},
++              {"name": "surface-pro-11-plugins", "replaces": false, "description": "p"}]}
++JSON
++cat >"$PACMAN_CONF" <<'CONF'
++[options]
++Architecture = auto
++
++# BEGIN OMARCHY DEVICE RECIPE
++[surface-pro-11]
++Server = https://example.invalid/$arch
++# END OMARCHY DEVICE RECIPE
++
++[omarchy]
++Server = https://pkgs.omarchy.org/edge/$arch
++CONF
++}
++setup
++
++# pacman: the recipe repository has the kernel and the plugins; once it is
++# gone from pacman.conf, only the kernel is still to be had (from Omarchy).
++cat >"$work/bin/pacman" <<'STUB'
++#!/bin/bash
++echo "pacman $*" >>"$WORK/calls"
++case $1 in
++  -Slq) grep -q '^\[surface-pro-11\]' "$PACMAN_CONF" && printf 'linux-omarchy\nsurface-pro-11-plugins\nfacelock\n' ;;
++  -Qq) [[ $2 == linux-omarchy || $2 == surface-pro-11-plugins ]] ;;
++  -Sp) [[ ${*: -1} == linux-omarchy ]] ;;
++  *) exit 0 ;;
++esac
++STUB
++for stub in pacman-key systemctl; do
++  printf '#!/bin/bash\necho "%s $*" >>"$WORK/calls"\n' "$stub" >"$work/bin/$stub"
++done
++chmod +x "$work/bin"/*
++export PATH=$work/bin:$PATH WORK=$work
++
++out=$("$TOOL")
++grep -q "not part of Omarchy" <<<"$out" || fail "status does not say it is not Omarchy's"
++grep -q "linux-omarchy  (replaces Omarchy's)" <<<"$out" || fail "status does not mark what it replaces"
++grep -q "surface-pro-11-plugins$" <<<"$out" || fail "status does not list the plugins"
++grep -q facelock <<<"$out" && fail "status lists a package that is not installed"
++
++[[ -z $("$TOOL" notice) ]] || fail "an active recipe gives a notice"
++mkdir -p "$OMARCHY_RECIPE_STATE"
++jq '.status = "retired" | .retiredMessage = "Omarchy 4 has it all."' "$OMARCHY_RECIPE_DIR/info.json" >"$OMARCHY_RECIPE_STATE/info.json"
++grep -q "retired this repository. Omarchy 4 has it all." <<<"$("$TOOL" notice)" || fail "no notice once retired"
++grep -q "sudo omarchy-recipe remove" <<<"$("$TOOL")" || fail "status does not say how to remove it"
++
++out=$("$TOOL" remove --yes)
++grep -q 'BEGIN OMARCHY DEVICE RECIPE\|surface-pro-11' "$PACMAN_CONF" && fail "the repository is still in pacman.conf"
++grep -q '^\[omarchy\]' "$PACMAN_CONF" || fail "removal took Omarchy's repository too"
++grep -q "pacman-key --delete 6CAC3F8AE94AC7BDCFB7A9017C8D01DD008051AB" "$work/calls" || fail "the key stays trusted"
++grep -q "pacman -S --noconfirm linux-omarchy" "$work/calls" || fail "the kernel does not go back to Omarchy's"
++grep -q "Kept, but no longer updated: surface-pro-11-plugins" <<<"$out" || fail "what only it had is not reported"
++grep -q "pacman -Rns" "$work/calls" && fail "removed packages without --purge"
++[[ ! -e $OMARCHY_RECIPE_DIR && -n $(compgen -G "$OMARCHY_RECIPE_DIR.removed-*") ]] || fail "the recipe is not set aside"
++grep -q "Removed\|no device recipe" <<<"$("$TOOL")" || fail "status after removal"
++
++setup
++"$TOOL" remove --yes --purge >/dev/null
++grep -q "pacman -Rns --noconfirm surface-pro-11-plugins$" "$work/calls" || fail "--purge does not remove what only it had"
++grep -q "pacman -Rns.*linux-omarchy" "$work/calls" && fail "--purge removes a package Omarchy has"
++echo "omarchy-recipe: ok"
+diff --git a/test/unit/test_device_recipe.py b/test/unit/test_device_recipe.py
+index 7a15433..0dbd108 100644
+--- a/test/unit/test_device_recipe.py
++++ b/test/unit/test_device_recipe.py
+@@ -2,6 +2,9 @@
+ orders the repository, and which packages it installs from it."""
+ 
+ import json
++import os
++import shutil
++import subprocess
+ import sys
+ import tempfile
+ import types
+@@ -39,6 +42,7 @@ class ReadTest(unittest.TestCase):
+         self.folder = Path(tempfile.mkdtemp())
+         (self.folder / "repo").mkdir()
+         (self.folder / "repo" / "surface-pro-11.db").touch()
++        (self.folder / "repo" / "surface-pro-11.db.sig").touch()
+         (self.folder / "key.asc").touch()
+ 
+     def write(self, r):
+@@ -52,6 +56,10 @@ class ReadTest(unittest.TestCase):
+         (self.folder / "key.asc").unlink()
+         self.assertIsNone(self.write(a_recipe()))
+ 
++    def test_needs_the_database_signed(self):
++        (self.folder / "repo" / "surface-pro-11.db.sig").unlink()
++        self.assertIsNone(self.write(a_recipe()))
++
+     def test_refuses_a_repository_named_like_omarchys(self):
+         r = a_recipe()
+         r["repo"]["name"] = "omarchy"
+@@ -105,6 +113,12 @@ class PacmanConfTest(unittest.TestCase):
+         self.assertLess(conf.index("[surface-pro-11]"), conf.index("[offline]"))
+         self.assertIn(f"file:///{recipe.TARGET_MEDIA}/recipe/repo", conf)
+ 
++    def test_offline_config_checks_signatures_with_the_recipe_keyring(self):
++        conf = recipe.offline_config(a_recipe())
++        self.assertIn(f"GPGDir = /{recipe.TARGET_RECIPE}/gnupg", conf)
++        section = conf[conf.index("[surface-pro-11]"):conf.index("[offline]")]
++        self.assertIn("SigLevel = Required DatabaseRequired", section)
++
+ 
+ class TargetsTest(unittest.TestCase):
+     def test_recipe_packages_and_what_the_repository_replaces(self):
+@@ -121,6 +135,52 @@ class TargetsTest(unittest.TestCase):
+                          ["surface-pro-11/surface-pro-11-plugins"])
+ 
+ 
++@unittest.skipUnless(shutil.which("gpg"), "needs gpg")
++class KeyringTest(unittest.TestCase):
++    """The keyring pacman checks the media with trusts the recipe's key, and
++    only when it is the key the recipe names."""
++
++    @classmethod
++    def setUpClass(cls):
++        cls.tmp = Path(tempfile.mkdtemp())
++        home = cls.tmp / "maker"
++        home.mkdir(mode=0o700)
++        env = {**os.environ, "GNUPGHOME": str(home)}
++        subprocess.run(["gpg", "--batch", "--quiet", "--pinentry-mode", "loopback", "--passphrase", "",
++                        "--quick-gen-key", "Recipe Test <test@example.invalid>", "ed25519", "sign", "never"],
++                       env=env, check=True, capture_output=True)
++        listed = subprocess.run(["gpg", "--with-colons", "--list-keys"], env=env, check=True,
++                                capture_output=True, text=True).stdout
++        cls.fingerprint = next(line.split(":")[9] for line in listed.splitlines() if line.startswith("fpr:"))
++        cls.key = cls.tmp / "key.asc"
++        cls.key.write_text(subprocess.run(["gpg", "--armor", "--export", cls.fingerprint], env=env, check=True,
++                                          capture_output=True, text=True).stdout)
++
++    def test_trusts_the_named_key(self):
++        home = self.tmp / "right"
++        self.assertTrue(recipe.make_keyring(home, self.key, self.fingerprint))
++        trust = subprocess.run(["gpg", "--homedir", str(home), "--export-ownertrust"], check=True,
++                               capture_output=True, text=True).stdout
++        self.assertIn(f"{self.fingerprint}:6:", trust)
++
++    def test_refuses_a_key_that_is_not_the_named_one(self):
++        self.assertFalse(recipe.make_keyring(self.tmp / "wrong", self.key, FINGERPRINT))
++
++
++class InstalledFilesTest(unittest.TestCase):
++    def test_tool_hook_and_daily_check(self):
++        target = Path(tempfile.mkdtemp())
++        with mock.patch.object(recipe, "FILES", ROOT / "configs/airootfs/usr/share/omarchy-iso/recipe"):
++            recipe._install_files(target)
++        tool = target / "usr/local/bin/omarchy-recipe"
++        self.assertTrue(tool.is_file() and os.access(tool, os.X_OK))
++        self.assertTrue((target / "etc/pacman.d/hooks/90-omarchy-recipe.hook").is_file())
++        link = target / "etc/systemd/system/timers.target.wants/omarchy-recipe-check.timer"
++        self.assertEqual(os.readlink(link), "/etc/systemd/system/omarchy-recipe-check.timer")
++        self.assertFalse((target / "etc/systemd/system/multi-user.target.wants").exists(),
++                         "the first-boot install is armed only when the install could not finish")
++
++
+ class StageTest(unittest.TestCase):
+     def test_keeps_the_partition_with_a_recipe_mounted(self):
+         media = Path(tempfile.mkdtemp())
+@@ -137,6 +197,7 @@ class StageTest(unittest.TestCase):
+                 if cmd[-2] == "/dev/sdb3":
+                     (folder / "repo").mkdir(parents=True)
+                     (folder / "repo" / "surface-pro-11.db").touch()
++                    (folder / "repo" / "surface-pro-11.db.sig").touch()
+                     (folder / "key.asc").touch()
+                     (folder / "recipe.json").write_text(json.dumps(a_recipe()))
+             return types.SimpleNamespace(returncode=0, stdout="")
+-- 
+2.56.0
+

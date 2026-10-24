@@ -1,7 +1,7 @@
 From 8e9abce01545b6ca91b5c3ad68c620db79aa16de Mon Sep 17 00:00:00 2001
 From: Brandon Williams <turbine.bmw@gmail.com>
 Date: Sat, 24 Oct 2026 13:00:20 -0400
-Subject: [PATCH 3/3] Give aarch64 images an empty OMARCHY_FW partition for
+Subject: [PATCH 3/4] Give aarch64 images an empty OMARCHY_FW partition for
  Windows firmware
 
 Writing the image and then appending a partition is easy from Linux but

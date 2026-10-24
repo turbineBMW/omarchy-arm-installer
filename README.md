@@ -21,18 +21,21 @@ The installer computes the laptop's CHIDs, the hardware IDs systemd-stub picks a
 
 ## Recipes
 
-A recipe adds a model's own packages while they make their way into Omarchy: a patched kernel, plugins, tuning. It is a folder in [`recipes/`](recipes) with a `recipe.json` and its repository's signing key; see [docs/RECIPES.md](docs/RECIPES.md). The installer downloads the recipe's repository, checks every package against its database, and puts it on the stick; the Omarchy installer installs it with the system and keeps the repository for updates.
+A recipe adds a model's own packages while they make their way into Omarchy: a patched kernel, plugins, tuning. **These extras are not part of Omarchy**; they come from the recipe's maintainer, and the installer says so before anyone opts in. A recipe is a folder in [`recipes/`](recipes) with a `recipe.json` and its repository's signing key. The repository describes itself in a signed `<repo>.recipe.json`, and the installer shows what each package does from that file.
+
+Everything the installer takes from a recipe's repository must be signed by the key the recipe pins: the database, the description and every package. pacman checks them again when Omarchy installs them. Installed machines get `omarchy-recipe`, which shows what came from the repository and removes it again (`sudo omarchy-recipe remove`). When the maintainer retires the repository because Omarchy has caught up, Omarchy's updates say so. See [docs/RECIPES.md](docs/RECIPES.md).
 
 ## The stick
 
-The installer image is Omarchy's aarch64 ISO with three patches ([`iso/patches`](iso/patches)) that read a 1 GiB `OMARCHY_FW` partition on the stick:
+The installer image is Omarchy's aarch64 ISO with four patches ([`iso/patches`](iso/patches)) that read a 1 GiB `OMARCHY_FW` partition on the stick:
 
 ```
 OMARCHY_FW/
   DriverStore/FileRepository/<package>/...   firmware, staged with qcom-firmware-extract
   recipe/recipe.json                         the chosen recipe, if any
-  recipe/key.asc
-  recipe/repo/<name>.db, *.pkg.tar.*
+  recipe/key.asc                             its key
+  recipe/info.json, info.json.sig            the repository's signed description
+  recipe/repo/<name>.db(.sig), *.pkg.tar.*(.sig)
 ```
 
 The patches are meant for omarchy-iso itself; once they are there, the stick is the stock Omarchy ISO.

@@ -7,14 +7,6 @@
     "name": "Brandon Williams",
     "github": "turbineBMW"
   },
-  "description": "This Surface's fixes and features while they make their way into Omarchy.",
-  "features": [
-    "Kernel with the Surface's suspend and Slim Pen fixes",
-    "Speakers tuned like Windows, cameras, sensors and battery charge limit",
-    "Pen, monitor and battery plugins for the Omarchy shell, and rounded corners",
-    "Face unlock with the IR camera",
-    "A boot menu entry for Windows, and Restart to Windows in Omarchy"
-  ],
   "match": {
     "chids": [
       "95971fb3-d478-591f-9ea3-eb0af0d1dfb5"

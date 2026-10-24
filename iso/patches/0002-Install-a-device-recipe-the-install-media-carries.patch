@@ -1,7 +1,7 @@
 From 28a6f075bce8b1a59f56a99be947d5232671f7c4 Mon Sep 17 00:00:00 2001
 From: Brandon Williams <turbine.bmw@gmail.com>
 Date: Sat, 24 Oct 2026 16:39:47 -0400
-Subject: [PATCH 2/3] Install a device recipe the install media carries
+Subject: [PATCH 2/4] Install a device recipe the install media carries
 
 A USB creator that recognises the machine can put a recipe on the
 OMARCHY_FW partition: a pacman repository's packages with its database,

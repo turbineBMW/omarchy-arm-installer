@@ -6,8 +6,9 @@
 FILEREPOSITORY is a Windows DriverStore/FileRepository, such as one on the
 laptop's Windows partition mounted from Linux. Without a device list to go
 by, every Qualcomm package (qc*) gives its firmware files, plus whatever the
-recipe names. ID is a folder in recipes/; its repository is downloaded,
-checked against the database, and copied with the recipe and its key.
+recipe names. ID is a folder in recipes/; its repository's database and
+description must be signed by the recipe's key (needs gpg), and every
+package checks out against the database before it is copied with them.
 """
 
 import argparse
@@ -17,7 +18,9 @@ import hashlib
 import io
 import json
 import shutil
+import subprocess
 import sys
+import tempfile
 import tarfile
 import urllib.request
 from pathlib import Path
@@ -63,21 +66,44 @@ def fetch(url: str) -> bytes:
         return response.read()
 
 
+def verify(data: bytes, signature: bytes, key: Path, fingerprint: str, what: str) -> None:
+    """A detached signature by the recipe's key, or stop."""
+    with tempfile.TemporaryDirectory() as home:
+        gpg = ["gpg", "--homedir", home, "--batch", "--quiet"]
+        subprocess.run([*gpg, "--import", str(key)], check=True, capture_output=True)
+        Path(home, "data").write_bytes(data)
+        Path(home, "data.sig").write_bytes(signature)
+        status = subprocess.run([*gpg, "--status-fd", "1", "--verify", f"{home}/data.sig", f"{home}/data"],
+                                capture_output=True, text=True).stdout
+        if not any(line.startswith("[GNUPG:] VALIDSIG ") and line.endswith(f" {fingerprint}")
+                   for line in status.splitlines()):
+            sys.exit(f"fill-stick: the {what} is not signed by key {fingerprint}")
+
+
 def copy_recipe(recipe_dir: Path, volume: Path, cache: Path) -> int:
     recipe = json.loads((recipe_dir / "recipe.json").read_text())
     repo = recipe["repo"]
+    key, fingerprint = recipe_dir / "key.asc", repo["keyFingerprint"]
     server = repo["server"].replace("$arch", ARCH)
     database = fetch(f"{server}/{repo['name']}.db")
+    database_sig = fetch(f"{server}/{repo['name']}.db.sig")
+    verify(database, database_sig, key, fingerprint, "package database")
+    info = fetch(f"{server}/{repo['name']}.recipe.json")
+    info_sig = fetch(f"{server}/{repo['name']}.recipe.json.sig")
+    verify(info, info_sig, key, fingerprint, "repository description")
+    description = json.loads(info)
+    if description.get("status") == "retired":
+        sys.exit(f"fill-stick: {repo['name']} is retired: {description.get('retiredMessage', '')}")
     packages = []
     with tarfile.open(fileobj=io.BytesIO(gzip.decompress(database))) as tar:
         for member in tar.getmembers():
             if member.name.endswith("/desc"):
-                fields, key = {}, None
+                fields, field = {}, None
                 for line in tar.extractfile(member).read().decode().splitlines():
                     if line.startswith("%") and line.endswith("%"):
-                        key = line.strip("%")
-                    elif key and line and key not in fields:
-                        fields[key] = line
+                        field = line.strip("%")
+                    elif field and line and field not in fields:
+                        fields[field] = line
                 packages.append((fields["FILENAME"], fields["SHA256SUM"]))
     cache.mkdir(parents=True, exist_ok=True)
     target = volume / "recipe" / "repo"
@@ -92,8 +118,14 @@ def copy_recipe(recipe_dir: Path, volume: Path, cache: Path) -> int:
             if hashlib.sha256(data).hexdigest() != sha:
                 sys.exit(f"fill-stick: {filename} does not match the repository database")
             cached.write_bytes(data)
+        signature = fetch(f"{server}/{filename}.sig")
+        verify(cached.read_bytes(), signature, key, fingerprint, filename)
         shutil.copy2(cached, target / filename)
+        (target / f"{filename}.sig").write_bytes(signature)
     (target / f"{repo['name']}.db").write_bytes(database)
+    (target / f"{repo['name']}.db.sig").write_bytes(database_sig)
+    (volume / "recipe" / "info.json").write_bytes(info)
+    (volume / "recipe" / "info.json.sig").write_bytes(info_sig)
     shutil.copy2(recipe_dir / "recipe.json", volume / "recipe" / "recipe.json")
     shutil.copy2(recipe_dir / "key.asc", volume / "recipe" / "key.asc")
     return len(packages)

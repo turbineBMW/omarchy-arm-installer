@@ -107,7 +107,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         Steps.Machine => MachineOk,
         Steps.Firmware => FirmwareOk && FirmwareSize <= StickRoom,
-        Steps.Extras => !UseRecipe || (RecipePackages is not null && !StickTooSmall),
+        Steps.Extras => !UseRecipe || !StickTooSmall,
         Steps.Installer => ImagePath is not null,
         Steps.Stick => SelectedDisk is not null,
         Steps.Windows => (!BitLocker.On || KeySaved) && !(AlreadyDone && DiskFreeLow),
@@ -216,19 +216,70 @@ public sealed class MainViewModel : INotifyPropertyChanged
     // ---------- Extras ----------
 
     bool useRecipe;
-    public bool UseRecipe { get => useRecipe; set { useRecipe = value; ChangedAll(); } }
-    byte[]? recipeDatabase;
-    public List<RepoPackage>? RecipePackages { get; private set; }
+    /// Only a verified, still-active repository can be chosen.
+    public bool UseRecipe { get => useRecipe && CanUseRecipe; set { useRecipe = value; ChangedAll(); } }
+    public bool CanUseRecipe => verified is not null && !verified.Description.IsRetired;
+    VerifiedRepo? verified;
+    public RecipeInfo? RecipeInfo => verified?.Description;
+    public List<RepoPackage>? RecipePackages => verified?.Packages;
+    public string RecipeProblem { get; private set; } = "";
+    public bool HasRecipeProblem => RecipeProblem.Length > 0;
+    public bool RecipeLoading => Recipe is not null && verified is null && !HasRecipeProblem;
     public long RecipeSize => UseRecipe ? RecipePackages?.Sum(p => p.Size) ?? 0 : 0;
-    public string RecipeFeatures => Recipe is null ? "" : string.Join("\n", Recipe.Features.Select(f => $"\u00b7 {f}"));
+
+    public string RecipeTitle => RecipeInfo?.Name ?? Recipe?.Name ?? "";
+    public string RecipeSummary => RecipeInfo?.Summary ?? "";
+    public IReadOnlyList<RecipeInfoPackage> RecipeInfoPackages => RecipeInfo?.Packages ?? [];
+    public bool RecipeRetired => RecipeInfo?.IsRetired == true;
+    public string RecipeRetiredText => RecipeInfo is { IsRetired: true } info
+        ? $"Its maintainer has retired this repository: {info.RetiredMessage ?? "Omarchy has everything it carried."} Install Omarchy as it comes."
+        : "";
+
+    /// What the person is shown before choosing: these are not Omarchy's.
+    public string RecipeWarning
+    {
+        get
+        {
+            if (Recipe is null) return "";
+            var replaced = RecipeInfoPackages.Where(p => p.Replaces).Select(p => p.Name).ToList();
+            return $"Not part of Omarchy. These packages come from {Recipe.Maintainer.Name}, not from the Omarchy team, " +
+                   "who have not reviewed them. " +
+                   (replaced.Count > 0 ? $"They replace Omarchy's own {string.Join(", ", replaced)}. " : "") +
+                   $"They keep updating from {Recipe.Maintainer.Name}'s repository until you remove it with omarchy-recipe remove " +
+                   "in a terminal; when the maintainer retires it, once Omarchy has the same, Omarchy's updates say so.";
+        }
+    }
+
     public string RecipeSource => Recipe is null ? "" :
-        $"From {Recipe.Maintainer.Name}{(Recipe.Maintainer.Github is { } gh ? $" (github.com/{gh})" : "")}\n" +
-        $"{Recipe.Repo.ServerFor(PacmanRepo.Arch)}\n" +
-        $"Signed with key {string.Join(" ", Recipe.Repo.KeyFingerprint.Chunk(4).Select(c => new string(c)))}";
-    public string RecipeDownload => RecipePackages is null ? "Looking at the extras' repository…" :
-        $"{RecipePackages.Count} packages, {RecipePackages.Sum(p => p.Size) / 1e6:0} MB, carried on the stick: " +
-        string.Join(", ", RecipePackages.Select(p => p.Name));
+        $"Maintainer  {Recipe.Maintainer.Name}{(Recipe.Maintainer.Github is { } gh ? $" (github.com/{gh})" : "")}\n" +
+        (RecipeInfo?.Homepage is { } home ? $"Homepage    {home}\n" : "") +
+        $"Repository  {Recipe.Repo.ServerFor(PacmanRepo.Arch)}\n" +
+        $"Key         {string.Join(" ", Recipe.Repo.KeyFingerprint.Chunk(4).Select(c => new string(c)))}";
+    public string RecipeTrust => verified is null ? "" :
+        "\uf00c  Signed by this key, which the installer's recipe for this model names. The packages are checked again when Omarchy installs them.";
+    public string RecipeDownload => RecipePackages is null ? "" :
+        $"{RecipePackages.Count} packages, {RecipePackages.Sum(p => p.Size) / 1e6:0} MB, go on the stick.";
     public bool StickTooSmall => FirmwareSize + RecipeSize > StickRoom;
+
+    public async Task LoadRecipeAsync()
+    {
+        if (Recipe is null || verified is not null) return;
+        RecipeProblem = "";
+        ChangedAll();
+        try
+        {
+            verified = await PacmanRepo.ReadAsync(Recipe, CancellationToken.None);
+            Log.Info($"Recipe {Recipe.Id}: verified, {verified.Description.Status}, " +
+                     string.Join(", ", verified.Packages.Select(p => $"{p.FileName} ({p.Size})")));
+        }
+        catch (Exception e)
+        {
+            Log.Error($"reading the {Recipe.Repo.Name} repository", e);
+            RecipeProblem = e is InvalidDataException ? e.Message
+                : $"Could not reach the extras' repository ({e.Message}). Leave them out, or go Back and try again.";
+        }
+        ChangedAll();
+    }
 
     // ---------- Next steps ----------
 
@@ -236,23 +287,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         "Turn Secure Boot off in this computer's firmware settings (often F2 or Del as it starts, or Windows' Advanced startup > UEFI Firmware Settings).";
     public string BootFromUsbText => Recipe?.BootFromUsb ??
         "Start from the stick: choose it in the firmware's boot menu (often F12 as it starts), or put it first in the boot order.";
-
-    public async Task LoadRecipeAsync()
-    {
-        if (Recipe is null || RecipePackages is not null) return;
-        try
-        {
-            (recipeDatabase, var packages) = await PacmanRepo.ReadAsync(Recipe.Repo, CancellationToken.None);
-            RecipePackages = packages;
-            Log.Info($"Recipe {Recipe.Id}: {string.Join(", ", packages.Select(p => $"{p.FileName} ({p.Size})"))}");
-        }
-        catch (Exception e)
-        {
-            Log.Error($"reading the {Recipe.Repo.Name} repository", e);
-            Error = $"Could not reach the extras' repository ({e.Message}). Leave the extras out, or try again later.";
-        }
-        ChangedAll();
-    }
 
     // ---------- Installer ----------
 
@@ -435,10 +469,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var recipeFolder = recipe is null ? null : Path.Combine(platform.DownloadFolder, "omarchy-recipes", recipe.Id);
             if (recipe is not null)
             {
-                if (RecipePackages is null || recipeDatabase is null) throw new InvalidOperationException("The extras' repository was not read; go Back to Extras.");
+                if (verified is null) throw new InvalidOperationException("The extras' repository was not read; go Back to Extras.");
                 Note($"Downloading the {recipe.Name}");
                 ProgressText = "Downloading and checking the extras";
-                await PacmanRepo.DownloadAsync(recipe.Repo, recipeDatabase, RecipePackages, Path.Combine(recipeFolder!, "repo"),
+                await PacmanRepo.DownloadAsync(recipe, verified, Path.Combine(recipeFolder!, "repo"),
                     new Progress<double>(p => Progress = p), ct);
                 Done($"{recipe.Name} downloaded and checked");
             }
@@ -470,7 +504,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (recipe is not null)
             {
                 Note($"Copying the {recipe.Name} onto the stick");
-                await Task.Run(() => CopyRecipe(recipe, recipeFolder!, Path.Combine(volume, "recipe")), ct);
+                await Task.Run(() => CopyRecipe(recipe, verified!, recipeFolder!, Path.Combine(volume, "recipe")), ct);
                 Done($"{recipe.Name} copied; the installer adds them");
             }
 
@@ -481,12 +515,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     /// The stick's recipe folder, as the installer reads it: recipe.json,
-    /// key.asc, and the repository in repo/.
-    static void CopyRecipe(Recipe recipe, string downloaded, string destination)
+    /// key.asc, the repository's signed description, and the repository in repo/.
+    static void CopyRecipe(Recipe recipe, VerifiedRepo verified, string downloaded, string destination)
     {
         Directory.CreateDirectory(Path.Combine(destination, "repo"));
         File.WriteAllText(Path.Combine(destination, "recipe.json"), recipe.Json);
         File.WriteAllText(Path.Combine(destination, "key.asc"), recipe.Key);
+        File.WriteAllBytes(Path.Combine(destination, "info.json"), verified.Info);
+        File.WriteAllBytes(Path.Combine(destination, "info.json.sig"), verified.InfoSignature);
         foreach (var file in Directory.EnumerateFiles(Path.Combine(downloaded, "repo")))
             File.Copy(file, Path.Combine(destination, "repo", Path.GetFileName(file)), overwrite: true);
     }
