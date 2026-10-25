@@ -2,10 +2,10 @@
 
 Installs [Omarchy](https://omarchy.org) on Snapdragon laptops from their own Windows, and collects what Linux developers need to support the ones it can't yet.
 
-Run `OmarchyArmInstaller.exe` in the laptop's Windows (as administrator). It does one of two things:
+Run `OmarchyArmInstaller.exe` in the laptop's Windows (as administrator). It reads the laptop first, and does one of two things:
 
-- **Make an Omarchy USB stick.** It recognises the laptop by its hardware IDs, copies the firmware Linux needs out of Windows' own drivers onto the stick, and writes the installer. BitLocker stays on: the firmware comes from the running Windows, not from its encrypted disk. Windows can stay next to Omarchy (you shrink C: in Disk Management, and the installer checks the room) or make way for it. If the laptop has a [recipe](#recipes), its extras can come along too.
-- **Share a hardware report.** For a laptop Linux doesn't know yet: its ACPI and SMBIOS tables, hardware IDs, devices and drivers, and a list of the firmware in its drivers, saved as a zip with serial numbers and other personal details taken out, and sent to [omarchy-hardware-reports](https://github.com/turbineBMW/omarchy-hardware-reports) through an issue form.
+- **Make an Omarchy USB stick**, when Linux has a device tree for the laptop. It recognises the laptop by its hardware IDs, copies the firmware Linux needs out of Windows' own drivers onto the stick, and writes the installer. BitLocker stays on: the firmware comes from the running Windows, not from its encrypted disk. Windows can stay next to Omarchy (you shrink C: in Disk Management, and the installer checks the room) or make way for it. If the laptop has a [recipe](#recipes), its extras can come along too.
+- **Share a hardware report**, when it doesn't: the installer says so, and what a report does and doesn't buy. The report holds its ACPI and SMBIOS tables, hardware IDs, devices and drivers, and a list of the firmware in its drivers, saved as a zip with serial numbers and other personal details taken out, and sent to [omarchy-hardware-reports](https://github.com/turbineBMW/omarchy-hardware-reports) through an issue form.
 
 ## How a laptop is recognised
 
@@ -15,7 +15,8 @@ The installer computes the laptop's CHIDs, the hardware IDs systemd-stub picks a
 |---|---|
 | Has a recipe | Offers the recipe's extras, then makes the stick |
 | Is in systemd's [hwids](https://github.com/systemd/systemd/tree/main/src/boot/hwids/aa64) (a device tree exists) | Makes the stick with Omarchy as it comes |
-| Neither | Says it can't start Omarchy yet, and offers the hardware report |
+| Neither | Says it can't start Omarchy yet, explains the device tree, and offers the hardware report |
+| Can't be read | Lets the user choose either |
 
 `app/Assets/models.json` is systemd's list; `bin/update-models` refreshes it.
 

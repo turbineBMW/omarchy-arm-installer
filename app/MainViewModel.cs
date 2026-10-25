@@ -93,7 +93,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsDoneStep => Current == Steps.Done;
     public bool IsCollectStep => Current == Steps.Collect;
     public bool IsShareStep => Current == Steps.Share;
-    public string StepTitle => Titles[Current];
+    public string StepTitle => IsStartStep ? StartTitle : Titles[Current];
     public bool IsReport => flow == ReportFlow;
     public string Subtitle => IsStartStep ? "for Windows on Arm laptops" : IsReport ? "hardware report" : "installer";
 
@@ -101,6 +101,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         Steps.Create => CreateLog.Count == 0 || HasError,
         Steps.Done => false,
+        // A laptop Linux knows was sent straight here; there is no start screen behind it.
+        Steps.Machine => Detected != Detection.Known,
         _ => true,
     };
     public bool CanGoNext => !Busy && Current switch
@@ -115,7 +117,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _ => false,
     };
     public bool ShowNext => Current is not (Steps.Start or Steps.Create or Steps.Done or Steps.Share);
-    public bool ShowClose => Current is Steps.Done or Steps.Share;
+    public bool ShowClose => Current is Steps.Done or Steps.Share || NotArm;
 
     public async Task StartAsync(bool report)
     {
@@ -132,6 +134,50 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string? Error { get => error; set { error = value; Changed(); Changed(nameof(HasError)); } }
     public bool HasError => !string.IsNullOrEmpty(Error);
 
+    // ---------- Looking at this computer ----------
+
+    /// What opening the installer found out, which decides what the start
+    /// screen is. A laptop Linux knows goes straight to making the stick; one
+    /// it does not is told what that means and offered the report; when the
+    /// computer could not be read, the person chooses.
+    public enum Detection { Looking, Known, NoDeviceTree, NotArm, Failed }
+
+    public Detection Detected { get; private set; } = Detection.Looking;
+    public bool IsLooking => IsStartStep && Detected == Detection.Looking;
+    public bool NoDeviceTree => IsStartStep && Detected == Detection.NoDeviceTree;
+    public bool NotArm => IsStartStep && Detected == Detection.NotArm;
+    public bool DetectFailed => IsStartStep && Detected == Detection.Failed;
+
+    string StartTitle => Detected switch
+    {
+        Detection.Looking => "Looking at this computer",
+        Detection.NoDeviceTree => "Linux doesn't know this computer yet",
+        Detection.NotArm => "Not a Windows on Arm computer",
+        _ => "What would you like to do?",
+    };
+
+    /// The list a laptop is recognised from goes stale with the installer.
+    public string ModelsNote =>
+        $"This installer ({Log.Version}) recognises the {Recipes.Models.Count} models in systemd's list when it was released, " +
+        $"and the {Recipes.All.Count} with a recipe. A newer release may know more: github.com/{ImageSource.Repository}/releases.";
+
+    public async Task DetectAsync()
+    {
+        Detected = Detection.Looking;
+        await RunAsync(async ct =>
+        {
+            ProgressText = "Reading this computer";
+            machine ??= await Task.Run(platform.GetMachine, ct);
+            if (!machine.IsArm64) { Detected = Detection.NotArm; return; }
+            await ReadMachineAsync(ct);
+            Detected = Model is not null || Recipe is not null ? Detection.Known : Detection.NoDeviceTree;
+        });
+        if (HasError) Detected = Detection.Failed;
+        Log.Info($"Start: {Detected}");
+        if (Detected == Detection.Known) await StartAsync(report: false);
+        else ChangedAll();
+    }
+
     // ---------- This computer ----------
 
     public ObservableCollection<Check> MachineChecks { get; } = [];
@@ -141,9 +187,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string MachineNote { get; private set; } = "";
     public bool HasMachineNote => MachineNote.Length > 0;
 
+    MachineInfo? machine;
     CollectedHardware? hardware;
     public Recipe? Recipe { get; private set; }
     public KnownModel? Model { get; private set; }
+
+    /// Reads the computer once: SMBIOS, displays and devices, and from those
+    /// the CHIDs that say whether Linux has a device tree for it and whether a
+    /// recipe matches. The start screen does this; the steps reuse it.
+    async Task ReadMachineAsync(CancellationToken ct)
+    {
+        machine ??= await Task.Run(platform.GetMachine, ct);
+        if (hardware is not null) return;
+        var m = machine;
+        hardware = await platform.Hardware.CollectAsync(new Progress<string>(t => { ProgressText = t; Changed(nameof(ProgressText)); }), ct);
+        var identity = hardware.Smbios is { Length: > 0 } table ? Smbios.Identity(Smbios.Parse(table)) : null;
+        var panel = hardware.Displays.OrderByDescending(d => d.Internal).Select(d => Edid.PanelId(d.Edid)).FirstOrDefault();
+        var chids = identity is null ? [] : Chid.Calculate(identity, panel).Select(c => c.Value).ToList();
+        Recipe = Recipes.For(chids);
+        Model = Recipes.ModelFor(chids);
+        MachineName = identity is null ? m.Model
+            : string.Join(" ", new[] { identity.Manufacturer, identity.ProductName }.Where(x => !string.IsNullOrWhiteSpace(x)))
+              + (identity.Sku is { } sku ? $"  ·  {sku}" : "");
+        Log.Info($"Machine: {MachineName}, arm64 {m.IsArm64}, administrator {m.IsAdministrator}, " +
+                 $"device tree {Model?.Compatible ?? "none"}, recipe {Recipe?.Id ?? "none"}, CHIDs {string.Join(" ", chids)}");
+    }
 
     public async Task CheckMachineAsync()
     {
@@ -153,18 +221,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         await RunAsync(async ct =>
         {
             ProgressText = "Reading this computer";
-            var m = platform.GetMachine();
-            hardware = await platform.Hardware.CollectAsync(new Progress<string>(t => { ProgressText = t; Changed(nameof(ProgressText)); }), ct);
-            var identity = hardware.Smbios is { Length: > 0 } table ? Smbios.Identity(Smbios.Parse(table)) : null;
-            var panel = hardware.Displays.OrderByDescending(d => d.Internal).Select(d => Edid.PanelId(d.Edid)).FirstOrDefault();
-            var chids = identity is null ? [] : Chid.Calculate(identity, panel).Select(c => c.Value).ToList();
-            Recipe = Recipes.For(chids);
-            Model = Recipes.ModelFor(chids);
-            MachineName = identity is null ? m.Model
-                : string.Join(" ", new[] { identity.Manufacturer, identity.ProductName }.Where(x => !string.IsNullOrWhiteSpace(x)))
-                  + (identity.Sku is { } sku ? $"  ·  {sku}" : "");
-            Log.Info($"Machine: {MachineName}, arm64 {m.IsArm64}, administrator {m.IsAdministrator}, " +
-                     $"device tree {Model?.Compatible ?? "none"}, recipe {Recipe?.Id ?? "none"}, CHIDs {string.Join(" ", chids)}");
+            await ReadMachineAsync(ct);
+            var m = machine!;
 
             MachineChecks.Add(new Check("Windows on Arm", m.IsArm64));
             MachineChecks.Add(new Check("Running as administrator", m.IsAdministrator,
@@ -773,17 +831,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
         await EnterAsync();
     }
 
-    public void Back()
+    public async Task BackAsync()
     {
         Error = null;
-        if (Step == 0)
+        if (Step > 0)
         {
-            flow = [];
-            Current = Steps.Start;
+            Step--;
+        }
+        else if (Detected == Detection.Known)
+        {
+            // The report was chosen from the stick's first step; go back there.
+            await StartAsync(report: false);
         }
         else
         {
-            Step--;
+            flow = [];
+            Current = Steps.Start;
         }
     }
 

@@ -19,7 +19,12 @@ public partial class MainWindow : Window
             // Demo only: start on a later step, for screenshots of each one.
             // OMARCHY_DEMO_MODE is install or report; STEP counts within it.
             var mode = model.IsDemo ? Environment.GetEnvironmentVariable("OMARCHY_DEMO_MODE") : null;
-            if (mode is null) return;
+            if (mode is null)
+            {
+                // The start screen: read the computer, and go on if Linux knows it.
+                await model.DetectAsync();
+                return;
+            }
             await model.StartAsync(mode == "report");
             if (int.TryParse(Environment.GetEnvironmentVariable("OMARCHY_DEMO_STEP"), out var step) && step > 0)
             {
@@ -54,7 +59,7 @@ public partial class MainWindow : Window
     }
 
     async void Next(object? sender, RoutedEventArgs e) => await model.NextAsync();
-    void Back(object? sender, RoutedEventArgs e) => model.Back();
+    async void Back(object? sender, RoutedEventArgs e) => await model.BackAsync();
     async void Download(object? sender, RoutedEventArgs e) => await model.DownloadAsync();
     async void Refresh(object? sender, RoutedEventArgs e) => await model.ListDisksAsync();
     async void Create(object? sender, RoutedEventArgs e) => await model.CreateAsync();

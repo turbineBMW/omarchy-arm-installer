@@ -93,20 +93,49 @@
       <StackPanel Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
         <TextBlock Text="{Binding StepTitle}" Classes="h1" />
 
-        <!-- Start -->
+        <!-- Start: what opening the installer found out about this computer -->
         <StackPanel Classes="step" IsVisible="{Binding IsStartStep}">
-          <Button Classes="choice" Click="StartInstall">
-            <StackPanel Spacing="6">
-              <TextBlock Text="Make an Omarchy USB stick" FontWeight="Bold" />
-              <TextBlock Classes="dim body" Text="A stick that installs Omarchy on this laptop and carries its firmware from Windows, so BitLocker can stay on and Windows can stay next to Omarchy." />
-            </StackPanel>
-          </Button>
-          <Button Classes="choice" Click="StartReport">
-            <StackPanel Spacing="6">
-              <TextBlock Text="Share a hardware report" FontWeight="Bold" />
-              <TextBlock Classes="dim body" Text="For any Windows on Arm laptop: collects what Linux developers need to support it, and helps you send it to them. Nothing on this computer changes." />
-            </StackPanel>
-          </Button>
+
+          <StackPanel Spacing="6" IsVisible="{Binding IsLooking}">
+            <TextBlock Classes="body" Text="Reading this computer's hardware IDs, to see whether Linux has a device tree for it." />
+            <TextBlock Text="{Binding ProgressText}" Classes="dim" />
+            <ProgressBar IsIndeterminate="True" />
+          </StackPanel>
+
+          <StackPanel Classes="step" IsVisible="{Binding NoDeviceTree}">
+            <TextBlock Text="{Binding MachineName}" FontWeight="Bold" TextWrapping="Wrap" />
+            <TextBlock Classes="body" Text="Linux starts on an Arm laptop through a device tree: a description of its hardware, written by hand for each model, because the firmware describes it only in the terms Windows' drivers use. There is no device tree for this model yet, so Omarchy cannot start on it, and this installer will not make a stick for it." />
+            <Border Classes="panel">
+              <StackPanel Spacing="4">
+                <TextBlock Text="What a hardware report does" FontWeight="Bold" />
+                <TextBlock Classes="dim body" Text="Whoever writes the device tree needs what this computer's firmware and Windows know about it: the ACPI tables, the hardware IDs, every device and its driver, the display's identity, and the names of the firmware files. Without the laptop in hand, that is what they ask for first. The report gathers it into one zip file, with serial numbers and other personal details taken out, and you send it through a form on GitHub." />
+                <TextBlock Text="What it means" FontWeight="Bold" Margin="0,8,0,0" />
+                <TextBlock Classes="dim body" Text="· It takes about a minute, and nothing on this computer changes.&#10;· It is a start, not a promise. A device tree is weeks of work by someone who knows the hardware, and a report does not make one appear; it makes one possible, and shows there is a laptop waiting for it.&#10;· When a device tree for this model reaches Linux and systemd's list, this installer recognises the laptop and makes the stick. Watch the issue, or try a newer release." />
+              </StackPanel>
+            </Border>
+            <Button Classes="primary" Content="Share a hardware report" Click="StartReport" HorizontalAlignment="Left" />
+            <TextBlock Classes="dim body" FontSize="12" Text="{Binding ModelsNote}" />
+          </StackPanel>
+
+          <StackPanel Classes="step" IsVisible="{Binding NotArm}">
+            <TextBlock Classes="body" Text="This installer is for Windows on Arm laptops: Snapdragon computers, whose firmware and device trees it deals in. This computer runs Windows on another kind of processor; for it, see omarchy.org." />
+          </StackPanel>
+
+          <StackPanel Classes="step" IsVisible="{Binding DetectFailed}">
+            <TextBlock Classes="body warn" Text="This computer could not be read, so the installer cannot tell whether Linux has a device tree for it. You can still choose:" />
+            <Button Classes="choice" Click="StartInstall">
+              <StackPanel Spacing="6">
+                <TextBlock Text="Make an Omarchy USB stick" FontWeight="Bold" />
+                <TextBlock Classes="dim body" Text="A stick that installs Omarchy on this laptop and carries its firmware from Windows, so BitLocker can stay on and Windows can stay next to Omarchy." />
+              </StackPanel>
+            </Button>
+            <Button Classes="choice" Click="StartReport">
+              <StackPanel Spacing="6">
+                <TextBlock Text="Share a hardware report" FontWeight="Bold" />
+                <TextBlock Classes="dim body" Text="For any Windows on Arm laptop: collects what Linux developers need to support it, and helps you send it to them. Nothing on this computer changes." />
+              </StackPanel>
+            </Button>
+          </StackPanel>
         </StackPanel>
 
         <!-- Hardware report -->
@@ -177,8 +206,8 @@
           </ItemsControl>
           <TextBlock Classes="body" Text="{Binding MachineNote}" IsVisible="{Binding HasMachineNote}"
                      Classes.warn="{Binding MachineUnsupported}" />
-          <Button Classes="primary" Content="Share a hardware report instead" Click="SwitchToReport"
-                  IsVisible="{Binding MachineUnsupported}" HorizontalAlignment="Left" />
+          <Button Content="Share a hardware report instead" Click="SwitchToReport" Classes.primary="{Binding MachineUnsupported}"
+                  IsVisible="{Binding !Busy}" HorizontalAlignment="Left" />
         </StackPanel>
 
         <!-- Firmware -->
