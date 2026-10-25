@@ -7,6 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Omarchy's mark, as the exe's icon. Assets\omarchy.svg is the source. -->
+    <ApplicationIcon>Assets\omarchy.ico</ApplicationIcon>
     <AssemblyName>OmarchyArmInstaller</AssemblyName>
     <RootNamespace>OmarchyArmInstaller</RootNamespace>
     <Product>Omarchy Arm Installer</Product>
@@ -32,6 +34,7 @@
 
   <ItemGroup>
     <AvaloniaResource Include="Assets\Fonts\**" />
+    <AvaloniaResource Include="Assets\omarchy.png" />
     <!-- Device recipes and the models systemd-stub knows, read at run time. -->
     <EmbeddedResource Include="..\recipes\**\recipe.json;..\recipes\**\key.asc" LogicalName="recipes/%(RecursiveDir)%(Filename)%(Extension)" />
     <EmbeddedResource Include="Assets\models.json" LogicalName="models.json" />

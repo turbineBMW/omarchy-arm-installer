@@ -6,6 +6,7 @@
         x:Class="OmarchyArmInstaller.MainWindow"
         x:DataType="local:MainViewModel"
         Title="Omarchy Arm Installer"
+        Icon="/Assets/omarchy.png"
         Width="920" Height="640" MinWidth="820" MinHeight="580"
         WindowStartupLocation="CenterScreen">
 
@@ -63,7 +64,10 @@
             BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,0" Padding="26,28">
       <DockPanel>
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,34">
-          <TextBlock Text="omarchy" FontSize="28" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Path Data="{StaticResource OmarchyMark}" Fill="{StaticResource AccentBrush}" Width="30" Height="30" Stretch="Uniform" VerticalAlignment="Center" />
+            <TextBlock Text="omarchy" FontSize="28" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center" />
+          </StackPanel>
           <TextBlock Text="{Binding Subtitle}" Classes="dim" />
           <TextBlock Text="We can fix everything… once we get past Windows." Classes="dim" FontStyle="Italic"
                      FontSize="12" TextWrapping="Wrap" Margin="0,14,0,0" />
