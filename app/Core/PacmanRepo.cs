@@ -5,7 +5,8 @@ using System.Security.Cryptography;
 
 namespace OmarchyArmInstaller.Core;
 
-public sealed record RepoPackage(string Name, string Version, string FileName, long Size, string Sha256);
+public sealed record RepoPackage(string Name, string Version, string FileName, long Size, string Sha256,
+    string[] Depends, string[] Provides);
 
 /// A recipe's repository as read and checked: its database and description,
 /// each with a signature by the key the recipe pins.
@@ -30,31 +31,57 @@ public static class PacmanRepo
         return client;
     }
 
-    /// The packages a repository database (a gzip'd tar of <pkg>/desc files) lists.
-    public static List<RepoPackage> ReadDatabase(Stream gzipped)
+    /// The packages a repository database lists. A database is a compressed
+    /// tar (gzip from repo-add, zstd from Omarchy's) with a directory per
+    /// package: `desc` holds everything in repo-add's output, while Arch Linux
+    /// ARM's databases keep %DEPENDS% and %PROVIDES% in a separate `depends`
+    /// file; both are read.
+    public static List<RepoPackage> ReadDatabase(Stream compressed)
     {
-        using var gzip = new GZipStream(gzipped, CompressionMode.Decompress);
-        using var tar = new TarReader(gzip);
-        var packages = new List<RepoPackage>();
+        using var tar = new TarReader(Decompress(compressed));
+        var entries = new Dictionary<string, Dictionary<string, List<string>>>();
         while (tar.GetNextEntry() is { } entry)
         {
-            if (!entry.Name.EndsWith("/desc") || entry.DataStream is null) continue;
+            var slash = entry.Name.LastIndexOf('/');
+            if (slash <= 0 || entry.DataStream is null) continue;
+            var file = entry.Name[(slash + 1)..];
+            if (file is not ("desc" or "depends")) continue;
+            var fields = entries.TryGetValue(entry.Name[..slash], out var known) ? known
+                : entries[entry.Name[..slash]] = new Dictionary<string, List<string>>();
             using var reader = new StreamReader(entry.DataStream);
-            var fields = new Dictionary<string, string>();
             string? key = null;
             while (reader.ReadLine() is { } line)
             {
-                if (line.StartsWith('%') && line.EndsWith('%')) key = line.Trim('%');
-                else if (key is not null && line.Length > 0 && !fields.ContainsKey(key)) fields[key] = line;
-            }
-            if (fields.TryGetValue("NAME", out var name) && fields.TryGetValue("FILENAME", out var file) &&
-                fields.TryGetValue("SHA256SUM", out var sha))
-            {
-                packages.Add(new RepoPackage(name, fields.GetValueOrDefault("VERSION", ""), file,
-                    long.TryParse(fields.GetValueOrDefault("CSIZE"), out var size) ? size : 0, sha.ToLowerInvariant()));
+                if (line.StartsWith('%') && line.EndsWith('%'))
+                {
+                    key = line.Trim('%');
+                    fields.TryAdd(key, []);
+                }
+                else if (key is not null && line.Length > 0) fields[key].Add(line);
             }
         }
+        var packages = new List<RepoPackage>();
+        foreach (var fields in entries.Values)
+        {
+            string One(string k) => fields.TryGetValue(k, out var v) && v.Count > 0 ? v[0] : "";
+            if (One("NAME") is "" || One("FILENAME") is "") continue;
+            packages.Add(new RepoPackage(One("NAME"), One("VERSION"), One("FILENAME"),
+                long.TryParse(One("CSIZE"), out var size) ? size : 0, One("SHA256SUM").ToLowerInvariant(),
+                fields.GetValueOrDefault("DEPENDS")?.ToArray() ?? [], fields.GetValueOrDefault("PROVIDES")?.ToArray() ?? []));
+        }
         return packages;
+    }
+
+    /// The tar inside a database, whatever compressed it.
+    static Stream Decompress(Stream compressed)
+    {
+        var magic = new byte[4];
+        var read = compressed.Read(magic, 0, 4);
+        compressed.Seek(0, SeekOrigin.Begin);
+        if (read >= 2 && magic[0] == 0x1f && magic[1] == 0x8b) return new GZipStream(compressed, CompressionMode.Decompress);
+        if (read == 4 && magic[0] == 0x28 && magic[1] == 0xb5 && magic[2] == 0x2f && magic[3] == 0xfd)
+            return new ZstdSharp.DecompressionStream(compressed);
+        throw new InvalidDataException("The package database is compressed in a way this installer does not read.");
     }
 
     /// Fetches and checks the database and the repository's description.

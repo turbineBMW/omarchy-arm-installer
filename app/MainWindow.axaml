@@ -256,6 +256,8 @@
             <ProgressBar Value="{Binding Progress}" Maximum="1" />
           </StackPanel>
           <TextBlock Classes="body" Text="{Binding ImageText}" />
+          <TextBlock Classes="dim body" FontSize="12" Text="{Binding OfficialText}" IsVisible="{Binding HasOfficial}" />
+          <TextBlock Classes="body warn" Text="{Binding OfficialProblem}" IsVisible="{Binding HasOfficialProblem}" />
         </StackPanel>
 
         <!-- USB stick -->

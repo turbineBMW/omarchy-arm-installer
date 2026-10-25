@@ -108,7 +108,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Steps.Machine => MachineOk,
         Steps.Firmware => FirmwareOk && FirmwareSize <= StickRoom,
         Steps.Extras => !UseRecipe || !StickTooSmall,
-        Steps.Installer => ImagePath is not null,
+        Steps.Installer => ImagePath is not null && (!UseRecipe || (imageFromRelease && official is not null)),
         Steps.Stick => SelectedDisk is not null,
         Steps.Windows => (!BitLocker.On || KeySaved) && !(AlreadyDone && DiskFreeLow),
         Steps.Collect => Report is not null,
@@ -225,7 +225,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string RecipeProblem { get; private set; } = "";
     public bool HasRecipeProblem => RecipeProblem.Length > 0;
     public bool RecipeLoading => Recipe is not null && verified is null && !HasRecipeProblem;
-    public long RecipeSize => UseRecipe ? RecipePackages?.Sum(p => p.Size) ?? 0 : 0;
+    public long RecipeSize => UseRecipe ? (RecipePackages?.Sum(p => p.Size) ?? 0) + (official?.Sum(p => p.Package.Size) ?? 0) : 0;
+
+    /// Omarchy's and Arch's packages the extras need that the installer image
+    /// does not carry; known once both the repository and the image are.
+    List<OfficialPackage>? official;
+    bool imageFromRelease;
+    public string OfficialProblem { get; private set; } = "";
+    public bool HasOfficialProblem => OfficialProblem.Length > 0;
+    public bool HasOfficial => official is not null && UseRecipe;
+    public string OfficialText => official is null ? "" : official.Count == 0
+        ? "The installer image has everything the extras depend on."
+        : $"The extras also need {official.Count} of Omarchy's and Arch Linux ARM's own packages that the installer image does not carry " +
+          $"({official.Sum(p => p.Package.Size) / 1e6:0.0} MB): {string.Join(", ", official.Select(p => p.Package.Name))}. " +
+          "They go on the stick too, with their own signatures, which Omarchy checks with its keyring.";
 
     public string RecipeTitle => RecipeInfo?.Name ?? Recipe?.Name ?? "";
     public string RecipeSummary => RecipeInfo?.Summary ?? "";
@@ -258,7 +271,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string RecipeTrust => verified is null ? "" :
         "\uf00c  Signed by this key, which the installer's recipe for this model names. The packages are checked again when Omarchy installs them.";
     public string RecipeDownload => RecipePackages is null ? "" :
-        $"{RecipePackages.Count} packages, {RecipePackages.Sum(p => p.Size) / 1e6:0} MB, go on the stick.";
+        $"{RecipePackages.Count} packages, {RecipePackages.Sum(p => p.Size) / 1e6:0} MB, go on the stick, " +
+        "plus whatever they depend on that the installer image does not carry (listed at the Installer step).";
     public bool StickTooSmall => FirmwareSize + RecipeSize > StickRoom;
 
     public async Task LoadRecipeAsync()
@@ -271,6 +285,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             verified = await PacmanRepo.ReadAsync(Recipe, CancellationToken.None);
             Log.Info($"Recipe {Recipe.Id}: verified, {verified.Description.Status}, " +
                      string.Join(", ", verified.Packages.Select(p => $"{p.FileName} ({p.Size})")));
+            official = null;
         }
         catch (Exception e)
         {
@@ -308,6 +323,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             release = await ImageSource.FindLatestAsync(CancellationToken.None);
             if (release is null) Error = "No installer has been published yet. Choose an ISO file instead.";
+            else await ResolveOfficialAsync();
         }
         catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -331,6 +347,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ProgressText = "Downloading and checking the installer";
             await ImageSource.DownloadAsync(release, path, new Progress<double>(p => Progress = p), ct);
             ImagePath = path;
+            imageFromRelease = true;
         });
     }
 
@@ -338,7 +355,45 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         Log.Info($"Image: {path} ({new FileInfo(path).Length} bytes)");
         ImagePath = path;
+        imageFromRelease = false;
         Error = null;
+        if (UseRecipe)
+            OfficialProblem = "With an ISO file of your own, this tool cannot tell what the image carries, so the extras' other " +
+                              "dependencies cannot be put on the stick and the install would fail. Download the installer above, or leave the extras out.";
+        ChangedAll();
+    }
+
+    /// Works out which official packages the stick must carry for the extras:
+    /// what the recipe's packages depend on that the image's offline mirror
+    /// (its published package list) and the recipe's repository lack.
+    public async Task ResolveOfficialAsync()
+    {
+        official = null;
+        OfficialProblem = "";
+        if (Recipe is null || verified is null || !UseRecipe || release is null) { ChangedAll(); return; }
+        if (release.OfflineDbUrl is null)
+        {
+            OfficialProblem = "This installer release does not say which packages it carries, so the extras cannot be completed " +
+                              "offline. Leave the extras out, or wait for a newer installer.";
+            ChangedAll();
+            return;
+        }
+        try
+        {
+            var ct = CancellationToken.None;
+            var offline = await OfficialPackages.FetchOfflineDatabaseAsync(release.OfflineDbUrl, ct);
+            var dbs = await OfficialPackages.FetchDatabasesAsync(ct);
+            var wanted = Recipe.Packages.Concat(verified.Description.Official);
+            official = OfficialPackages.Resolve(wanted, verified.Packages, offline, dbs);
+            Log.Info($"Official packages for {Recipe.Id} beyond {release.IsoName}: " +
+                     (official.Count == 0 ? "none" : string.Join(", ", official.Select(p => $"{p.Repo.Name}/{p.Package.FileName} ({p.Package.Size})"))));
+        }
+        catch (Exception e)
+        {
+            Log.Error("working out the extras' official packages", e);
+            OfficialProblem = e is InvalidDataException ? e.Message
+                : $"Could not read the package repositories ({e.Message}). Leave the extras out, or go Back and try again.";
+        }
         ChangedAll();
     }
 
@@ -475,6 +530,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 await PacmanRepo.DownloadAsync(recipe, verified, Path.Combine(recipeFolder!, "repo"),
                     new Progress<double>(p => Progress = p), ct);
                 Done($"{recipe.Name} downloaded and checked");
+                if (official is null) throw new InvalidOperationException("The extras' other dependencies were not worked out; go Back to Installer.");
+                // Only this run's set goes on the stick: a stale file from an
+                // earlier run would be installed too.
+                var officialFolder = Path.Combine(recipeFolder!, "official");
+                if (Directory.Exists(officialFolder)) Directory.Delete(officialFolder, recursive: true);
+                if (official.Count > 0)
+                {
+                    Note($"Downloading {official.Count} of Omarchy's and Arch's packages the installer image lacks");
+                    ProgressText = "Downloading and checking the official packages";
+                    await OfficialPackages.DownloadAsync(official, officialFolder, new Progress<double>(p => Progress = p), ct);
+                    Done($"{official.Count} official packages downloaded and checked");
+                }
             }
             // A retry after a failure must not shrink C: a second time.
             if (Plan == WindowsPlan.Keep && !shrunk)
@@ -515,7 +582,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     /// The stick's recipe folder, as the installer reads it: recipe.json,
-    /// key.asc, the repository's signed description, and the repository in repo/.
+    /// key.asc, the repository's signed description, the repository in repo/,
+    /// and in official/ the official packages the image lacks.
     static void CopyRecipe(Recipe recipe, VerifiedRepo verified, string downloaded, string destination)
     {
         Directory.CreateDirectory(Path.Combine(destination, "repo"));
@@ -525,6 +593,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         File.WriteAllBytes(Path.Combine(destination, "info.json.sig"), verified.InfoSignature);
         foreach (var file in Directory.EnumerateFiles(Path.Combine(downloaded, "repo")))
             File.Copy(file, Path.Combine(destination, "repo", Path.GetFileName(file)), overwrite: true);
+        var official = Path.Combine(downloaded, "official");
+        if (!Directory.Exists(official)) return;
+        Directory.CreateDirectory(Path.Combine(destination, "official"));
+        foreach (var file in Directory.EnumerateFiles(official))
+            File.Copy(file, Path.Combine(destination, "official", Path.GetFileName(file)), overwrite: true);
     }
 
     void Note(string text) => Lines.Add(new LogLine(text, false));
@@ -718,7 +791,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
             case Steps.Machine: await CheckMachineAsync(); break;
             case Steps.Firmware: FindFirmware(); break;
             case Steps.Extras: await LoadRecipeAsync(); break;
-            case Steps.Installer: if (release is null) await FindReleaseAsync(); break;
+            case Steps.Installer:
+                if (release is null) await FindReleaseAsync();
+                else if (UseRecipe && official is null && !HasOfficialProblem) await ResolveOfficialAsync();
+                break;
             case Steps.Stick: await ListDisksAsync(); break;
             case Steps.Windows: await CheckWindowsAsync(); break;
         }

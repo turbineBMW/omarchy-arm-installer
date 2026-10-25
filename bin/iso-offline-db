@@ -1,0 +1,29 @@
+#!/bin/bash
+# Take the offline mirror's package database out of an installer image.
+#
+#   bin/iso-offline-db ISO OUT
+#
+# The image carries Omarchy's offline mirror inside its root file system
+# (arch/aarch64/airootfs.sfs, a squashfs); its offline.db says which packages
+# an install has without the network. publish-iso puts it beside the ISO so
+# the USB creators can tell which of a recipe's dependencies the stick must
+# carry. Needs bsdtar and unsquashfs (squashfs-tools).
+set -euo pipefail
+
+iso=${1:?usage: bin/iso-offline-db ISO OUT}
+out=${2:?usage: bin/iso-offline-db ISO OUT}
+folder=var/cache/omarchy/mirror/offline
+
+command -v unsquashfs >/dev/null || { echo "iso-offline-db: needs unsquashfs (squashfs-tools)" >&2; exit 1; }
+work=$(mktemp -d)
+# unsquashfs keeps the image's directory modes, some read-only.
+trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
+
+sfs=$(bsdtar -tf "$iso" | grep -m1 '/airootfs\.sfs$' || true)
+[[ -n $sfs ]] || { echo "iso-offline-db: no airootfs.sfs in $iso" >&2; exit 1; }
+bsdtar -xOf "$iso" "$sfs" >"$work/airootfs.sfs"
+# offline.db is a symlink to offline.db.tar.gz: take both, then follow it.
+unsquashfs -quiet -no-progress -d "$work/root" "$work/airootfs.sfs" "$folder/offline.db" "$folder/offline.db.tar.gz" >/dev/null
+db=$work/root/$folder/offline.db
+[[ -e $db ]] || { echo "iso-offline-db: $iso has no offline mirror database" >&2; exit 1; }
+install -D -m 644 "$(realpath "$db")" "$out"

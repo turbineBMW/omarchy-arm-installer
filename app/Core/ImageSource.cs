@@ -6,7 +6,7 @@ namespace OmarchyArmInstaller.Core;
 
 /// An installer image on GitHub: parts that join into one ISO, and its SHA-256.
 public sealed record ReleasedImage(string Tag, string IsoName, IReadOnlyList<(string Name, string Url, long Size)> Parts,
-    string ChecksumUrl)
+    string ChecksumUrl, string? OfflineDbUrl)
 {
     public long Size => Parts.Sum(p => p.Size);
 }
@@ -48,7 +48,10 @@ public static class ImageSource
             var isoName = checksum.Name[..^".sha256".Length];
             var parts = assets.Where(a => a.Name.StartsWith(isoName + ".part-")).OrderBy(a => a.Name, StringComparer.Ordinal).ToList();
             if (parts.Count == 0) continue;
-            return new ReleasedImage(tag, isoName, parts, checksum.Url);
+            // The offline mirror's database: what the image installs without the
+            // network, so a recipe's other dependencies can go on the stick.
+            var offlineDb = assets.FirstOrDefault(a => a.Name.EndsWith(".offline.db"));
+            return new ReleasedImage(tag, isoName, parts, checksum.Url, offlineDb.Name is null or "" ? null : offlineDb.Url);
         }
         return null;
     }

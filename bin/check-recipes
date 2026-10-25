@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 """Check every recipes/*/recipe.json: the fields the app and the installer
 read, the same limits the installer applies, and that key.asc is the key
-the recipe names (needs gpg)."""
+the recipe names (needs gpg). Then, unless --no-network, that each recipe
+installs offline from the latest published image: its repository's database
+is fetched, and every dependency must be in the image's offline mirror, in
+the repository, or in Omarchy's and Arch's repositories (those are listed:
+the stick carries them). OFFLINE_DB=path uses that database instead of the
+latest release's."""
 
 import json
+import os
 import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pacmandb  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
+RELEASES = "https://api.github.com/repos/turbineBMW/omarchy-arm-installer/releases?per_page=30"
 RESERVED = {"options", "offline", "omarchy", "core", "extra", "multilib", "alarm", "aur", "platform"}
 CHID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
@@ -57,9 +68,62 @@ def check(folder: Path) -> list[str]:
     return problems
 
 
+def fetch(url: str) -> bytes:
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "check-recipes"}), timeout=120) as r:
+        return r.read()
+
+
+def latest_offline_db() -> bytes | None:
+    """The offline mirror database published with the newest installer image."""
+    if os.environ.get("OFFLINE_DB"):
+        return Path(os.environ["OFFLINE_DB"]).read_bytes()
+    for release in json.loads(fetch(RELEASES)):
+        if not release["tag_name"].startswith("installer-") or release["draft"]:
+            continue
+        for asset in release["assets"]:
+            if asset["name"].endswith(".offline.db"):
+                return fetch(asset["browser_download_url"])
+    return None
+
+
+def check_offline(folder: Path, offline_db: bytes, official_dbs) -> list[str]:
+    """What the stick carries from the official repositories for this recipe,
+    or the dependency nothing provides."""
+    r = json.loads((folder / "recipe.json").read_text())
+    server = r["repo"]["server"].replace("$arch", pacmandb.ARCH)
+    try:
+        recipe_db = pacmandb.read_db(fetch(f"{server}/{r['repo']['name']}.db"))
+        description = json.loads(fetch(f"{server}/{r['repo']['name']}.recipe.json"))
+    except Exception as e:  # noqa: BLE001
+        return [f"repository: {e}"]
+    missing = [p for p in r["packages"] if p not in recipe_db]
+    if missing:
+        return [f"the repository has no {', '.join(missing)}"]
+    try:
+        official = pacmandb.resolve_official(list(r["packages"]) + list(description.get("official", [])),
+                                             recipe_db, pacmandb.read_db(offline_db), official_dbs)
+    except LookupError as e:
+        return [f"nothing provides {e}: not the image, not the repository, not Omarchy's or Arch's repositories"]
+    print(f"  from the official repositories, on the stick: {' '.join(f'{repo}/{p.name}' for repo, _, p in official) or 'nothing'}")
+    return []
+
+
 failed = False
-for folder in sorted(p for p in (ROOT / "recipes").iterdir() if p.is_dir()):
+folders = sorted(p for p in (ROOT / "recipes").iterdir() if p.is_dir())
+for folder in folders:
     problems = check(folder)
     print(f"{folder.name}: {'ok' if not problems else '; '.join(problems)}")
     failed |= bool(problems)
+
+if "--no-network" not in sys.argv and not failed:
+    offline_db = latest_offline_db()
+    if offline_db is None:
+        print("no published image carries an offline mirror database yet; skipping the offline check")
+    else:
+        official_dbs = [(r, u, pacmandb.read_db(fetch(f"{u}/{r}.db"))) for r, u in pacmandb.OFFICIAL_REPOS]
+        for folder in folders:
+            print(f"{folder.name}: offline install")
+            problems = check_offline(folder, offline_db, official_dbs)
+            print(f"  {'ok' if not problems else '; '.join(problems)}")
+            failed |= bool(problems)
 sys.exit(1 if failed else 0)

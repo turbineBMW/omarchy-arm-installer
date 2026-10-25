@@ -1,4 +1,4 @@
-From c276901ee0e17c9ad1d75b0d513831251c7cd245 Mon Sep 17 00:00:00 2001
+From 3648686ceda60c11481593b308da5923342d1b47 Mon Sep 17 00:00:00 2001
 From: Brandon Williams <turbine.bmw@gmail.com>
 Date: Sat, 24 Oct 2026 17:25:02 -0400
 Subject: [PATCH 4/4] Check device recipes' signatures, and let the system
@@ -24,6 +24,15 @@ its recipe may have no Wi-Fi to fetch it with (the Surface Pro 11's board
 file comes from the recipe). A failure now stops the install with pacman's
 output in the log instead of a system that looks installed and is not.
 
+What makes the stick complete: the image's offline mirror has only what
+every install needs, and a recipe's packages depend on more of Omarchy's
+and Arch Linux ARM's own packages (the Surface's sensors, iptsd,
+iio-sensor-proxy and their libraries). The USB creator now puts those
+under recipe/official/ with their upstream signatures, and the installer
+installs them first with pacman -U and LocalFileSigLevel = Required, so
+the system keyring (Omarchy's and Arch's keys) checks each one. The
+recipe's own key still signs nothing but the recipe's own packages.
+
 Fixed on the way: the loop copying the recipe's files reused the variable
 holding the repository's name, so /etc/omarchy/recipe/repo said
 "info.json.sig", pacman -Slq found no packages, and nothing was installed.
@@ -31,19 +40,19 @@ The copy is its own function now, with a test on what it writes.
 
 Tested: test/all passes, with a new test of omarchy-recipe against
 stubbed pacman, keyring tests with a real ed25519 key, and tests of the
-saved recipe files.
+saved recipe files and the official packages' listing and pacman.conf.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
- .../share/omarchy-iso/orchestrator/recipe.py  | 168 ++++++++++--------
- .../share/omarchy-iso/recipe/omarchy-recipe   | 136 ++++++++++++++
+ .../share/omarchy-iso/orchestrator/recipe.py  | 219 ++++++++++++------
+ .../share/omarchy-iso/recipe/omarchy-recipe   | 136 +++++++++++
  .../recipe/omarchy-recipe-check.service       |   9 +
- .../recipe/omarchy-recipe-check.timer         |  10 ++
- .../omarchy-iso/recipe/omarchy-recipe.hook    |  11 ++
- test/unit/omarchy-recipe-test.sh              |  88 +++++++++
- test/unit/test_device_recipe.py               |  93 ++++++++++
- 7 files changed, 442 insertions(+), 73 deletions(-)
+ .../recipe/omarchy-recipe-check.timer         |  10 +
+ .../omarchy-iso/recipe/omarchy-recipe.hook    |  11 +
+ test/unit/omarchy-recipe-test.sh              |  88 +++++++
+ test/unit/test_device_recipe.py               | 136 +++++++++++
+ 7 files changed, 535 insertions(+), 74 deletions(-)
  create mode 100755 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe
  create mode 100644 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.service
  create mode 100644 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.timer
@@ -51,26 +60,32 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
  create mode 100644 test/unit/omarchy-recipe-test.sh
 
 diff --git a/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py b/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py
-index f1007ab..7b1cd01 100644
+index f1007ab..0508a25 100644
 --- a/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py
 +++ b/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py
-@@ -5,12 +5,19 @@ Windows) can put a recipe on the OMARCHY_FW partition:
+@@ -5,12 +5,24 @@ Windows) can put a recipe on the OMARCHY_FW partition:
  
      recipe/recipe.json      which repository and packages, and its key
      recipe/key.asc          the repository's signing key
 -    recipe/repo/            the packages, and the repository database
 +    recipe/info.json(.sig)  the repository's signed description of itself
 +    recipe/repo/            the packages, and the signed repository database
++    recipe/official/        Omarchy's and Arch Linux ARM's own packages the
++                            recipe needs and the image's offline mirror lacks,
++                            each with its upstream signature
  
- The packages are installed with the system, their dependencies coming from
+-The packages are installed with the system, their dependencies coming from
 -the image's offline mirror; the repository is then configured above
 -[omarchy] for updates. When something they need is not on the media, a
 -first-boot service installs them once the machine is online instead.
-+the image's offline mirror, and pacman checks every signature against a
-+keyring holding the recipe's key and nothing else. The repository is then
-+configured above [omarchy] for updates. When something they need is not on
-+the media, the install fails: the stick is made to be complete, and a
-+machine without its recipe may have no Wi-Fi to fetch it with later.
++The official packages go in first, with pacman -U, every signature checked
++against the system keyring (Omarchy's and Arch's keys). Then the recipe's
++packages are installed, pacman checking every signature against a keyring
++holding the recipe's key and nothing else, dependencies coming from the
++offline mirror. The repository is then configured above [omarchy] for
++updates. When something is still missing, the install fails: the stick is
++made to be complete, and a machine without its recipe may have no Wi-Fi to
++fetch it with later.
 +
 +The installed system gets omarchy-recipe, which shows what the recipe is,
 +fetches the repository's description daily, says on updates when its
@@ -78,7 +93,7 @@ index f1007ab..7b1cd01 100644
  """
  
  from __future__ import annotations
-@@ -29,7 +36,8 @@ MEDIA_MOUNT = Path("/run/omarchy/recipe-media")
+@@ -29,7 +41,8 @@ MEDIA_MOUNT = Path("/run/omarchy/recipe-media")
  # Inside the target, where arch-chroot does not hide it (it mounts its own /run).
  TARGET_MEDIA = "var/cache/omarchy/recipe"
  TARGET_RECIPE = "etc/omarchy/recipe"
@@ -88,7 +103,7 @@ index f1007ab..7b1cd01 100644
  BEGIN = "# BEGIN OMARCHY DEVICE RECIPE"
  END = "# END OMARCHY DEVICE RECIPE"
  RESERVED_REPOS = {"options", "offline", "omarchy", "core", "extra", "multilib", "alarm", "aur", "platform"}
-@@ -58,8 +66,9 @@ def read(folder: Path) -> dict | None:
+@@ -58,8 +71,9 @@ def read(folder: Path) -> dict | None:
          return None
      if not all(isinstance(p, str) and re.fullmatch(r"[a-z0-9@._+-]+", p) for p in packages):
          return None
@@ -100,7 +115,7 @@ index f1007ab..7b1cd01 100644
      return recipe
  
  
-@@ -90,15 +99,33 @@ def offline_config(recipe: dict) -> str:
+@@ -90,15 +104,65 @@ def offline_config(recipe: dict) -> str:
      first, so its packages win, then the offline mirror."""
      name = recipe["repo"]["name"]
      return (
@@ -118,6 +133,38 @@ index f1007ab..7b1cd01 100644
      )
  
  
++def official_config() -> str:
++    """pacman.conf for the official packages the media carries: installed as
++    files, each signature checked against the system keyring (Omarchy's and
++    Arch Linux ARM's keys), dependencies from the offline mirror."""
++    return (
++        "[options]\nArchitecture = auto\nNoProgressBar\nLocalFileSigLevel = Required\n\n"
++        "[offline]\nSigLevel = Never\nServer = file:///var/cache/omarchy/mirror/offline/\n"
++    )
++
++
++PACKAGE_FILE = re.compile(r"[a-z0-9@._+-]+-[A-Za-z0-9._:+~-]+-[A-Za-z0-9._+-]+-[a-z0-9_]+\.pkg\.tar\.[a-z0-9]+")
++
++
++def official_files(media: Path) -> list[str]:
++    """The package files under recipe/official on the media, each with its
++    signature beside it. An odd name or a missing signature fails the install
++    rather than being skipped: the stick is meant to be complete."""
++    folder = media / "recipe" / "official"
++    if not folder.is_dir():
++        return []
++    files = []
++    for path in sorted(folder.iterdir()):
++        if path.name.endswith(".sig") or not path.is_file():
++            continue
++        if path.name.startswith(".") or not PACKAGE_FILE.fullmatch(path.name):
++            raise RuntimeError(f"not a package file among the media's official packages: {path.name}")
++        if not (folder / f"{path.name}.sig").is_file():
++            raise RuntimeError(f"{path.name} on the install media has no signature")
++        files.append(path.name)
++    return files
++
++
 +def make_keyring(home: Path, key: Path, fingerprint: str) -> bool:
 +    """A GnuPG home trusting only the recipe's key, for pacman's GPGDir and
 +    omarchy-recipe's checks."""
@@ -139,7 +186,7 @@ index f1007ab..7b1cd01 100644
  def online_section(recipe: dict) -> str:
      repo = recipe["repo"]
      return f"{BEGIN}\n[{repo['name']}]\nServer = {repo['server']}\n{END}\n"
-@@ -123,37 +150,40 @@ def _targets(recipe: dict, available: list[str], installed: set[str]) -> list[st
+@@ -123,37 +187,40 @@ def _targets(recipe: dict, available: list[str], installed: set[str]) -> list[st
      return [f"{name}/{p}" for p in wanted if p in available]
  
  
@@ -208,7 +255,7 @@ index f1007ab..7b1cd01 100644
  
  
  def _chroot(ctx: InstallContext, *cmd: str, capture: bool = False) -> subprocess.CompletedProcess:
-@@ -172,11 +202,13 @@ def install(ctx: InstallContext) -> None:
+@@ -172,11 +239,13 @@ def install(ctx: InstallContext) -> None:
  
      name = recipe["repo"]["name"]
      saved = ctx.target / TARGET_RECIPE
@@ -227,7 +274,7 @@ index f1007ab..7b1cd01 100644
  
      media = ctx.target / TARGET_MEDIA
      media.mkdir(parents=True, exist_ok=True)
-@@ -187,16 +219,23 @@ def install(ctx: InstallContext) -> None:
+@@ -187,16 +256,35 @@ def install(ctx: InstallContext) -> None:
      conf.write_text(offline_config(recipe))
      config = f"/{TARGET_RECIPE}/pacman-offline.conf"
  
@@ -245,6 +292,18 @@ index f1007ab..7b1cd01 100644
 -            (saved / "packages").write_text("\n".join(t.split("/", 1)[1] for t in targets) + "\n")
 -            info(f"› installing the device recipe: {' '.join(targets)}")
 -            installed_ok = bool(targets) and _chroot(ctx, "pacman", "--config", config, "-S", "--noconfirm", *targets).returncode == 0
++        official = official_files(MEDIA_MOUNT)
++        if official:
++            (saved / "pacman-official.conf").write_text(official_config())
++            (saved / "official").write_text("\n".join(official) + "\n")
++            official_conf = f"/{TARGET_RECIPE}/pacman-official.conf"
++            info(f"› installing {len(official)} of Omarchy's and Arch's packages the image lacks: "
++                 + " ".join(re.sub(r"-[^-]+-[^-]+-[^-]+\.pkg\.tar\.[a-z0-9]+$", "", f) for f in official))
++            if _chroot(ctx, "pacman", "--config", official_conf, "-Sy").returncode != 0:
++                raise RuntimeError("pacman could not read the image's offline mirror")
++            paths = [f"/{TARGET_MEDIA}/recipe/official/{f}" for f in official]
++            if _chroot(ctx, "pacman", "--config", official_conf, "-U", "--noconfirm", "--needed", *paths).returncode != 0:
++                raise RuntimeError("the official packages on the install media did not install; see pacman's output above")
 +        if _chroot(ctx, "pacman", "--config", config, "-Sy").returncode != 0:
 +            raise RuntimeError(f"pacman could not read the device recipe's repository {name} from the install media")
 +        available = _chroot(ctx, "pacman", "--config", config, "-Slq", name, capture=True).stdout.split()
@@ -259,7 +318,7 @@ index f1007ab..7b1cd01 100644
      finally:
          _unmask_mkinitcpio_pacman_hooks(ctx, ctx.target, TARGET_DEFERRED_BOOT_HOOKS)
          subprocess.run(["umount", str(media)], check=False)
-@@ -208,23 +247,6 @@ def install(ctx: InstallContext) -> None:
+@@ -208,23 +296,6 @@ def install(ctx: InstallContext) -> None:
      add_online_repo(ctx.target / "etc" / "pacman.conf", recipe)
      fingerprint = recipe["repo"]["keyFingerprint"]
      key = f"/{TARGET_RECIPE}/key.asc"
@@ -571,7 +630,7 @@ index 0000000..de69d8e
 +grep -q "pacman -Rns.*linux-omarchy" "$work/calls" && fail "--purge removes a package Omarchy has"
 +echo "omarchy-recipe: ok"
 diff --git a/test/unit/test_device_recipe.py b/test/unit/test_device_recipe.py
-index 7a15433..be0bf15 100644
+index 7a15433..21380a7 100644
 --- a/test/unit/test_device_recipe.py
 +++ b/test/unit/test_device_recipe.py
 @@ -2,6 +2,9 @@
@@ -616,7 +675,7 @@ index 7a15433..be0bf15 100644
  
  class TargetsTest(unittest.TestCase):
      def test_recipe_packages_and_what_the_repository_replaces(self):
-@@ -121,6 +135,84 @@ class TargetsTest(unittest.TestCase):
+@@ -121,6 +135,127 @@ class TargetsTest(unittest.TestCase):
                           ["surface-pro-11/surface-pro-11-plugins"])
  
  
@@ -666,6 +725,49 @@ index 7a15433..be0bf15 100644
 +        self.assertEqual(os.readlink(link), "/etc/systemd/system/omarchy-recipe-check.timer")
 +
 +
++class OfficialTest(unittest.TestCase):
++    """Omarchy's and Arch's packages the stick carries for the recipe: taken
++    as files, signatures checked with the system keyring, nothing skipped."""
++
++    def media(self, *names, signed=True):
++        media = Path(tempfile.mkdtemp())
++        folder = media / "recipe" / "official"
++        folder.mkdir(parents=True)
++        for name in names:
++            (folder / name).write_bytes(b"pkg")
++            if signed:
++                (folder / f"{name}.sig").write_bytes(b"sig")
++        return media
++
++    def test_config_uses_the_system_keyring_and_the_offline_mirror(self):
++        conf = recipe.official_config()
++        self.assertIn("LocalFileSigLevel = Required", conf)
++        self.assertNotIn("GPGDir", conf)
++        self.assertIn("[offline]", conf)
++        self.assertNotIn("[surface", conf)
++
++    def test_lists_the_package_files_only(self):
++        media = self.media("iptsd-3.1.0-2-aarch64.pkg.tar.zst", "surface-snapdragon-addresses-1-1-any.pkg.tar.zst",
++                           "libssc-0.4.4-1-aarch64.pkg.tar.xz")
++        (media / "recipe" / "official" / "stray.sig").write_bytes(b"")
++        self.assertEqual(recipe.official_files(media),
++                         ["iptsd-3.1.0-2-aarch64.pkg.tar.zst", "libssc-0.4.4-1-aarch64.pkg.tar.xz",
++                          "surface-snapdragon-addresses-1-1-any.pkg.tar.zst"])
++
++    def test_nothing_without_the_folder(self):
++        self.assertEqual(recipe.official_files(Path(tempfile.mkdtemp())), [])
++
++    def test_refuses_an_unsigned_package(self):
++        with self.assertRaises(RuntimeError):
++            recipe.official_files(self.media("iptsd-3.1.0-2-aarch64.pkg.tar.zst", signed=False))
++
++    def test_refuses_what_is_not_a_package(self):
++        with self.assertRaises(RuntimeError):
++            recipe.official_files(self.media("notes.txt"))
++        with self.assertRaises(RuntimeError):
++            recipe.official_files(self.media("..-1-1-any.pkg.tar.zst"))
++
++
 +class SaveTest(unittest.TestCase):
 +    """What the installed system keeps of the recipe: the files from the
 +    media, and the repository's name and key on their own."""
@@ -701,7 +803,7 @@ index 7a15433..be0bf15 100644
  class StageTest(unittest.TestCase):
      def test_keeps_the_partition_with_a_recipe_mounted(self):
          media = Path(tempfile.mkdtemp())
-@@ -137,6 +229,7 @@ class StageTest(unittest.TestCase):
+@@ -137,6 +272,7 @@ class StageTest(unittest.TestCase):
                  if cmd[-2] == "/dev/sdb3":
                      (folder / "repo").mkdir(parents=True)
                      (folder / "repo" / "surface-pro-11.db").touch()

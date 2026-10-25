@@ -25,11 +25,17 @@ echo "==> Checksum"
 (cd "$(dirname "$iso")" && sha256sum "$(basename "$iso")") | awk -v n="$name" '{ print $1 "  " n }' >"$work/$name.sha256"
 cat "$work/$name.sha256"
 
+# What the image installs without the network, so the USB creators can tell
+# which of a recipe's dependencies the stick has to carry.
+echo "==> Offline mirror database"
+"$root/bin/iso-offline-db" "$iso" "$work/${name%.iso}.offline.db"
+ls -la "$work/${name%.iso}.offline.db"
+
 echo "==> Splitting into parts"
 split --bytes=1900M "$iso" "$work/$name.part-"
 ls -la "$work"
 
-assets=("$work/$name.sha256" "$work/$name".part-*)
+assets=("$work/$name.sha256" "$work/${name%.iso}.offline.db" "$work/$name".part-*)
 [[ -z $app ]] || assets+=("$app")
 
 echo "==> Release $tag on $repo"

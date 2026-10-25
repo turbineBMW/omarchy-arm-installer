@@ -18,6 +18,8 @@ public sealed record RecipeInfo
     public string Status { get; init; } = "active";
     public string? RetiredMessage { get; init; }
     public RecipeInfoPackage[] Packages { get; init; } = [];
+    /// Official packages the recipe wants on the stick beyond what its packages depend on.
+    public string[] Official { get; init; } = [];
 
     public bool IsRetired => Status.Equals("retired", StringComparison.OrdinalIgnoreCase);
 

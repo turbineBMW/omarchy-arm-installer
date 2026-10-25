@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fill a stick's OMARCHY_FW volume the way the Windows app does.
 
-  bin/fill-stick VOLUME [--firmware FILEREPOSITORY] [--recipe ID]
+  bin/fill-stick VOLUME [--firmware FILEREPOSITORY] [--recipe ID --offline-db DB]
 
 FILEREPOSITORY is a Windows DriverStore/FileRepository, such as one on the
 laptop's Windows partition mounted from Linux. Without a device list to go
@@ -9,21 +9,24 @@ by, every Qualcomm package (qc*) gives its firmware files, plus whatever the
 recipe names. ID is a folder in recipes/; its repository's database and
 description must be signed by the recipe's key (needs gpg), and every
 package checks out against the database before it is copied with them.
+DB is the installer image's offline mirror database (bin/iso-offline-db):
+the official packages the recipe needs beyond it come along too, from
+Omarchy's and Arch Linux ARM's repositories, with their signatures.
 """
 
 import argparse
 import fnmatch
-import gzip
 import hashlib
-import io
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
-import tarfile
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pacmandb  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 ARCH = "aarch64"
@@ -80,11 +83,11 @@ def verify(data: bytes, signature: bytes, key: Path, fingerprint: str, what: str
             sys.exit(f"fill-stick: the {what} is not signed by key {fingerprint}")
 
 
-def copy_recipe(recipe_dir: Path, volume: Path, cache: Path) -> int:
+def copy_recipe(recipe_dir: Path, volume: Path, cache: Path, offline_db: Path | None) -> tuple[int, list[str]]:
     recipe = json.loads((recipe_dir / "recipe.json").read_text())
     repo = recipe["repo"]
     key, fingerprint = recipe_dir / "key.asc", repo["keyFingerprint"]
-    server = repo["server"].replace("$arch", ARCH)
+    server = repo["server"].replace("$arch", pacmandb.ARCH)
     database = fetch(f"{server}/{repo['name']}.db")
     database_sig = fetch(f"{server}/{repo['name']}.db.sig")
     verify(database, database_sig, key, fingerprint, "package database")
@@ -94,41 +97,52 @@ def copy_recipe(recipe_dir: Path, volume: Path, cache: Path) -> int:
     description = json.loads(info)
     if description.get("status") == "retired":
         sys.exit(f"fill-stick: {repo['name']} is retired: {description.get('retiredMessage', '')}")
-    packages = []
-    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(database))) as tar:
-        for member in tar.getmembers():
-            if member.name.endswith("/desc"):
-                fields, field = {}, None
-                for line in tar.extractfile(member).read().decode().splitlines():
-                    if line.startswith("%") and line.endswith("%"):
-                        field = line.strip("%")
-                    elif field and line and field not in fields:
-                        fields[field] = line
-                packages.append((fields["FILENAME"], fields["SHA256SUM"]))
+    packages = pacmandb.read_db(database)
     cache.mkdir(parents=True, exist_ok=True)
     target = volume / "recipe" / "repo"
     target.mkdir(parents=True, exist_ok=True)
-    for filename, sha in packages:
-        if "/" in filename or filename.startswith("."):
-            sys.exit(f"fill-stick: odd file name in the repository: {filename}")
-        cached = cache / filename
-        if not cached.is_file() or hashlib.sha256(cached.read_bytes()).hexdigest() != sha:
-            print(f"    {filename}")
-            data = fetch(f"{server}/{filename}")
-            if hashlib.sha256(data).hexdigest() != sha:
-                sys.exit(f"fill-stick: {filename} does not match the repository database")
-            cached.write_bytes(data)
-        signature = fetch(f"{server}/{filename}.sig")
-        verify(cached.read_bytes(), signature, key, fingerprint, filename)
-        shutil.copy2(cached, target / filename)
-        (target / f"{filename}.sig").write_bytes(signature)
+    for package in packages.values():
+        cached = download(server, package, cache)
+        signature = fetch(f"{server}/{package.filename}.sig")
+        verify(cached.read_bytes(), signature, key, fingerprint, package.filename)
+        shutil.copy2(cached, target / package.filename)
+        (target / f"{package.filename}.sig").write_bytes(signature)
     (target / f"{repo['name']}.db").write_bytes(database)
     (target / f"{repo['name']}.db.sig").write_bytes(database_sig)
     (volume / "recipe" / "info.json").write_bytes(info)
     (volume / "recipe" / "info.json.sig").write_bytes(info_sig)
     shutil.copy2(recipe_dir / "recipe.json", volume / "recipe" / "recipe.json")
     shutil.copy2(recipe_dir / "key.asc", volume / "recipe" / "key.asc")
-    return len(packages)
+
+    # The image installs the recipe without the network, so what its offline
+    # mirror lacks has to be on the stick too. The installer checks these
+    # against the system keyring; here only the hash from the repository's
+    # database is checked, over https.
+    wanted = list(recipe["packages"]) + list(description.get("official", []))
+    official = pacmandb.resolve_official(wanted, packages, pacmandb.read_db(offline_db.read_bytes()),
+                                         [(r, u, pacmandb.read_db(fetch(f"{u}/{r}.db"))) for r, u in pacmandb.OFFICIAL_REPOS])
+    folder = volume / "recipe" / "official"
+    folder.mkdir(parents=True, exist_ok=True)
+    for repo_name, repo_server, package in official:
+        cached = download(repo_server, package, cache / repo_name)
+        shutil.copy2(cached, folder / package.filename)
+        (folder / f"{package.filename}.sig").write_bytes(fetch(f"{repo_server}/{package.filename}.sig"))
+    return len(packages), [f"{r}/{p.name}" for r, _, p in official]
+
+
+def download(server: str, package: pacmandb.Package, cache: Path) -> Path:
+    """The package file, from the cache when its hash still matches."""
+    if "/" in package.filename or package.filename.startswith("."):
+        sys.exit(f"fill-stick: odd file name in the repository: {package.filename}")
+    cache.mkdir(parents=True, exist_ok=True)
+    cached = cache / package.filename
+    if not cached.is_file() or hashlib.sha256(cached.read_bytes()).hexdigest() != package.sha256:
+        print(f"    {package.filename}")
+        data = fetch(f"{server}/{package.filename}")
+        if hashlib.sha256(data).hexdigest() != package.sha256:
+            sys.exit(f"fill-stick: {package.filename} does not match the repository database")
+        cached.write_bytes(data)
+    return cached
 
 
 def main() -> None:
@@ -136,7 +150,10 @@ def main() -> None:
     parser.add_argument("volume", type=Path)
     parser.add_argument("--firmware", type=Path)
     parser.add_argument("--recipe")
+    parser.add_argument("--offline-db", type=Path, help="the installer image's offline.db (bin/iso-offline-db)")
     args = parser.parse_args()
+    if args.recipe and not args.offline_db:
+        sys.exit("fill-stick: a recipe needs the image's package list: --offline-db DB (bin/iso-offline-db ISO DB)")
     recipe_dir = ROOT / "recipes" / args.recipe if args.recipe else None
     if recipe_dir and not (recipe_dir / "recipe.json").is_file():
         sys.exit(f"fill-stick: no recipe {args.recipe} in recipes/")
@@ -146,8 +163,11 @@ def main() -> None:
         print(f"    {copy_firmware(args.firmware, args.volume, recipe)} files")
     if recipe_dir:
         print(f"==> Recipe {args.recipe}")
-        count = copy_recipe(recipe_dir, args.volume, ROOT / ".cache" / "recipes" / args.recipe)
+        count, official = copy_recipe(recipe_dir, args.volume, ROOT / ".cache" / "recipes" / args.recipe, args.offline_db)
         print(f"    {count} packages")
+        print(f"==> Official packages the image lacks: {len(official)}")
+        for name in official:
+            print(f"    {name}")
 
 
 if __name__ == "__main__":

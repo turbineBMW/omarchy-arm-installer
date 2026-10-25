@@ -36,6 +36,7 @@ OMARCHY_FW/
   recipe/key.asc                             its key
   recipe/info.json, info.json.sig            the repository's signed description
   recipe/repo/<name>.db(.sig), *.pkg.tar.*(.sig)
+  recipe/official/*.pkg.tar.*(.sig)          Omarchy's and Arch's packages the recipe needs and the image lacks
 ```
 
 The patches are meant for omarchy-iso itself; once they are there, the stick is the stock Omarchy ISO.
@@ -45,7 +46,7 @@ The patches are meant for omarchy-iso itself; once they are there, the stick is 
 ```sh
 dotnet publish app -c Release -r win-arm64 --self-contained true -o out   # the Windows app
 bin/build-iso                                                             # the ISO
-bin/publish-iso ISO [out/OmarchyArmInstaller.exe]                         # a release the app finds
+bin/publish-iso ISO [out/OmarchyArmInstaller.exe]                         # a release the app finds (needs unsquashfs)
 sudo bin/make-usb ISO /dev/sdX --firmware .../FileRepository --recipe ID   # a stick from Linux
 bin/check-recipes
 ```

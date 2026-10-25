@@ -26,6 +26,8 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.22" />
     <!-- OpenPGP signatures on recipe repositories. -->
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
+    <!-- Omarchy's package databases are zstd-compressed; .NET has no zstd. -->
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.6" />
   </ItemGroup>
 
   <ItemGroup>

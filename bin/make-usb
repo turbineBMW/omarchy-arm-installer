@@ -6,7 +6,9 @@
 #
 # FILEREPOSITORY is a Windows DriverStore/FileRepository directory, such as
 # "/run/media/$USER/Local Disk/Windows/System32/DriverStore/FileRepository";
-# ID is a folder in recipes/. bin/fill-stick says what each copies. Without
+# ID is a folder in recipes/. bin/fill-stick says what each copies; with a
+# recipe it also fetches the official packages the image lacks (needs
+# unsquashfs to read the image's package list). Without
 # --firmware the installer reads the Windows partition instead.
 #
 # Everything on DEVICE is erased. It must be a removable USB disk, and the
@@ -77,6 +79,14 @@ if ((${#fill[@]})); then
   mnt=$(mktemp -d)
   mount "$part" "$mnt"
   trap 'umount "$mnt"; rmdir "$mnt"' EXIT
+  # With a recipe, fill-stick also fetches the official packages the image
+  # lacks; the image's own package list says which.
+  if [[ " ${fill[*]} " == *" --recipe "* ]]; then
+    offline_db=$(mktemp)
+    trap 'umount "$mnt"; rmdir "$mnt"; rm -f "$offline_db"' EXIT
+    "$root/bin/iso-offline-db" "$iso" "$offline_db"
+    fill+=(--offline-db "$offline_db")
+  fi
   python3 "$root/bin/fill-stick" "$mnt" "${fill[@]}"
   du -sh "$mnt"
 fi
