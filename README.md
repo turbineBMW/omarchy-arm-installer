@@ -4,7 +4,7 @@ Installs [Omarchy](https://omarchy.org) on Snapdragon laptops from their own Win
 
 Run `OmarchyArmInstaller.exe` in the laptop's Windows (as administrator). It does one of two things:
 
-- **Make an Omarchy USB stick.** It recognises the laptop by its hardware IDs, copies the firmware Linux needs out of Windows' own drivers onto the stick, and writes the installer. BitLocker stays on: the firmware comes from the running Windows, not from its encrypted disk. Windows can stay next to Omarchy (the installer shrinks C: for it) or make way for it. If the laptop has a [recipe](#recipes), its extras can come along too.
+- **Make an Omarchy USB stick.** It recognises the laptop by its hardware IDs, copies the firmware Linux needs out of Windows' own drivers onto the stick, and writes the installer. BitLocker stays on: the firmware comes from the running Windows, not from its encrypted disk. Windows can stay next to Omarchy (you shrink C: in Disk Management, and the installer checks the room) or make way for it. If the laptop has a [recipe](#recipes), its extras can come along too.
 - **Share a hardware report.** For a laptop Linux doesn't know yet: its ACPI and SMBIOS tables, hardware IDs, devices and drivers, and a list of the firmware in its drivers, saved as a zip with serial numbers and other personal details taken out, and sent to [omarchy-hardware-reports](https://github.com/turbineBMW/omarchy-hardware-reports) through an issue form.
 
 ## How a laptop is recognised

@@ -10,12 +10,9 @@ public sealed record UsbDisk(int Number, string Model, long Size, string Serial)
 /// BitLocker on C:. Recovery keys are the 48-digit numerical passwords.
 public sealed record BitLockerState(bool On, IReadOnlyList<(string Id, string Password)> RecoveryKeys);
 
-/// What C: can shrink to, so Omarchy can be installed into the free space,
-/// and the largest stretch of unallocated space already on its disk.
-public sealed record SystemPartition(long Size, long MinimumSize, long DiskFree)
-{
-    public long MaxShrink => Math.Max(0, Size - MinimumSize);
-}
+/// C: and the largest stretch of unallocated space on its disk, where Omarchy
+/// installs next to Windows. The user makes that space in Disk Management.
+public sealed record SystemPartition(long Size, long DiskFree);
 
 /// Everything that touches the machine: real on Windows, simulated elsewhere
 /// so the interface can be developed and checked on Linux.
@@ -33,8 +30,8 @@ public interface IPlatform
     Task<BitLockerState> GetBitLockerAsync(CancellationToken ct);
     Task<SystemPartition> GetSystemPartitionAsync(CancellationToken ct);
 
-    /// Shrinks C: by <bytes>, leaving unallocated space for Omarchy.
-    Task ShrinkSystemPartitionAsync(long bytes, CancellationToken ct);
+    /// Opens Windows' Disk Management, where the user shrinks C: for Omarchy.
+    void OpenDiskManagement();
 
     /// Keeps BitLocker's keys in the clear for the next <reboots> starts, so
     /// turning Secure Boot off does not ask for the recovery key.

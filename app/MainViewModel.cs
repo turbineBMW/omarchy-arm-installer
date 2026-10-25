@@ -110,7 +110,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Steps.Extras => !UseRecipe || !StickTooSmall,
         Steps.Installer => ImagePath is not null && (!UseRecipe || (imageFromRelease && official is not null)),
         Steps.Stick => SelectedDisk is not null,
-        Steps.Windows => (!BitLocker.On || KeySaved) && !(AlreadyDone && DiskFreeLow),
+        Steps.Windows => (!BitLocker.On || KeySaved) && !(KeepWindows && DiskFreeLow),
         Steps.Collect => Report is not null,
         _ => false,
     };
@@ -424,27 +424,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     // ---------- Windows ----------
 
-    public enum WindowsPlan { Keep, AlreadyDone, Replace }
+    public enum WindowsPlan { Keep, Replace }
 
     WindowsPlan plan = WindowsPlan.Keep;
     public WindowsPlan Plan { get => plan; set { plan = value; ChangedAll(); } }
     public bool KeepWindows { get => Plan == WindowsPlan.Keep; set { if (value) Plan = WindowsPlan.Keep; } }
-    public bool AlreadyDone { get => Plan == WindowsPlan.AlreadyDone; set { if (value) Plan = WindowsPlan.AlreadyDone; } }
     public bool ReplaceWindows { get => Plan == WindowsPlan.Replace; set { if (value) Plan = WindowsPlan.Replace; } }
     /// Windows stays, so Secure Boot going off is something it will notice.
     public bool WindowsStays => Plan != WindowsPlan.Replace;
 
-    public string DiskFreeText => Partition is null ? "" : Partition.DiskFree >= 20e9
-        ? $"{Partition.DiskFree / 1e9:0} GB of unallocated space found on this disk."
-        : $"Only {Partition.DiskFree / 1e9:0} GB of unallocated space on this disk; Omarchy needs at least 20 GB.";
-    public bool DiskFreeLow => Partition is not null && Partition.DiskFree < 20e9;
-
     public SystemPartition? Partition { get; private set; }
-    public double MaxShrinkGb => Partition is null ? 0 : Math.Floor(Partition.MaxShrink / 1e9);
-    double shrinkGb = 128;
-    public double ShrinkGb { get => shrinkGb; set { shrinkGb = Math.Round(value); Changed(); Changed(nameof(ShrinkText)); } }
-    public string ShrinkText => $"Make {ShrinkGb:0} GB of room for Omarchy (C: keeps {(Partition is null ? 0 : (Partition.Size / 1e9 - ShrinkGb)):0} GB)";
-    public bool CanShrink => MaxShrinkGb >= 32;
+    /// Omarchy's installer wants this much unallocated space for a free-space install.
+    const double MinFree = 20e9;
+    public bool DiskFreeLow => Partition is null || Partition.DiskFree < MinFree;
+    public string DiskFreeText => Partition is null ? "Reading this computer's disk…" : Partition.DiskFree >= MinFree
+        ? $"{Partition.DiskFree / 1e9:0} GB of unallocated space on this disk: enough for Omarchy."
+        : Partition.DiskFree < 1e9
+            ? "No unallocated space on this disk yet. Omarchy needs at least 20 GB."
+            : $"Only {Partition.DiskFree / 1e9:0} GB of unallocated space on this disk. Omarchy needs at least 20 GB.";
 
     public BitLockerState BitLocker { get; private set; } = new(false, []);
     public string RecoveryKeys => string.Join("\n", BitLocker.RecoveryKeys.Select(k => k.Password));
@@ -455,10 +452,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         try
         {
-            Partition = await platform.GetSystemPartitionAsync(CancellationToken.None);
-            ShrinkGb = Math.Clamp(ShrinkGb, 32, Math.Max(32, MaxShrinkGb));
-            if (!CanShrink && Plan == WindowsPlan.Keep) Plan = Partition!.DiskFree >= 20e9 ? WindowsPlan.AlreadyDone : WindowsPlan.Replace;
-            Log.Info($"C: {Partition!.Size / 1e9:0.0} GB, shrinkable to {Partition.MinimumSize / 1e9:0.0} GB; {Partition.DiskFree / 1e9:0.0} GB unallocated");
+            await CheckDiskAsync();
             BitLocker = await platform.GetBitLockerAsync(CancellationToken.None);
             Log.Info($"BitLocker on C:: {(BitLocker.On ? "on" : "off")}, {BitLocker.RecoveryKeys.Count} recovery key(s)");
         }
@@ -467,6 +461,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Fail("reading C: and BitLocker", e);
         }
         ChangedAll();
+    }
+
+    /// Reads the disk again, after the user has shrunk C: in Disk Management.
+    public async Task CheckDiskAsync()
+    {
+        try
+        {
+            Partition = await platform.GetSystemPartitionAsync(CancellationToken.None);
+            Log.Info($"C: {Partition.Size / 1e9:0.0} GB; {Partition.DiskFree / 1e9:0.0} GB unallocated on its disk");
+        }
+        catch (Exception e)
+        {
+            Fail("reading C: and its disk", e);
+        }
+        ChangedAll();
+    }
+
+    public void OpenDiskManagement()
+    {
+        Log.Info("Opening Disk Management");
+        platform.OpenDiskManagement();
     }
 
     public string RecoveryKeyFileText =>
@@ -484,13 +499,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         (UseRecipe && Recipe is not null ? $" and the {Recipe.Name}" : "") + ".\n" +
         Plan switch
         {
-            WindowsPlan.Keep => $"Shrink C: by {ShrinkGb:0} GB so Omarchy installs next to Windows.",
-            WindowsPlan.AlreadyDone => "Leave C: as it is: Omarchy installs into the space you made.",
+            WindowsPlan.Keep => $"Leave Windows as it is; Omarchy installs into the {(Partition?.DiskFree ?? 0) / 1e9:0} GB of unallocated space next to it.",
             _ => "Leave Windows as it is; Omarchy's installer will erase this computer's disk.",
         } +
         (WindowsStays && BitLocker.On ? "\nPause BitLocker for the next 3 starts, while Secure Boot is turned off and Omarchy is installed." : "");
-
-    bool shrunk;
 
     public async Task CreateAsync()
     {
@@ -518,7 +530,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         CreateLog.Clear();
         await RunAsync(async ct =>
         {
-            Log.Info($"Creating: disk {disk.Number} ({disk.Model}, {disk.Size} bytes), image {image}, plan {Plan}, shrink {ShrinkGb} GB, BitLocker {(BitLocker.On ? "on" : "off")}, recipe {(UseRecipe ? Recipe?.Id : "none")}");
+            Log.Info($"Creating: disk {disk.Number} ({disk.Model}, {disk.Size} bytes), image {image}, plan {Plan}, BitLocker {(BitLocker.On ? "on" : "off")}, recipe {(UseRecipe ? Recipe?.Id : "none")}");
             // Download first: a failed download must not leave a half-made stick.
             var recipe = UseRecipe ? Recipe : null;
             var recipeFolder = recipe is null ? null : Path.Combine(platform.DownloadFolder, "omarchy-recipes", recipe.Id);
@@ -542,14 +554,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     await OfficialPackages.DownloadAsync(official, officialFolder, new Progress<double>(p => Progress = p), ct);
                     Done($"{official.Count} official packages downloaded and checked");
                 }
-            }
-            // A retry after a failure must not shrink C: a second time.
-            if (Plan == WindowsPlan.Keep && !shrunk)
-            {
-                Note($"Shrinking C: by {ShrinkGb:0} GB");
-                await platform.ShrinkSystemPartitionAsync((long)(ShrinkGb * 1e9), ct);
-                shrunk = true;
-                Done($"C: shrunk; {ShrinkGb:0} GB free for Omarchy");
             }
             if (WindowsStays && BitLocker.On)
             {

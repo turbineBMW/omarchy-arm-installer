@@ -280,30 +280,37 @@
 
         <!-- Windows -->
         <StackPanel Classes="step" IsVisible="{Binding IsWindowsStep}">
-          <RadioButton GroupName="windows" IsChecked="{Binding KeepWindows}" IsEnabled="{Binding CanShrink}">
+          <RadioButton GroupName="windows" IsChecked="{Binding KeepWindows}">
             <StackPanel Spacing="6">
               <TextBlock Text="Keep Windows next to Omarchy" FontWeight="Bold" />
-              <TextBlock Classes="dim body" Text="Makes room by shrinking C:. Omarchy's boot menu lists Windows, and Omarchy can restart into it." />
+              <TextBlock Classes="dim body" Text="Omarchy installs into unallocated space on this disk. Omarchy's boot menu lists Windows, and Omarchy can restart into it." />
             </StackPanel>
           </RadioButton>
-          <StackPanel Margin="30,0,0,0" Spacing="4" IsVisible="{Binding KeepWindows}">
-            <Slider Minimum="32" Maximum="{Binding MaxShrinkGb}" Value="{Binding ShrinkGb}" TickFrequency="8" IsSnapToTickEnabled="True" />
-            <TextBlock Text="{Binding ShrinkText}" Classes="dim" />
-          </StackPanel>
-          <RadioButton GroupName="windows" IsChecked="{Binding AlreadyDone}">
-            <StackPanel Spacing="6">
-              <TextBlock Text="I've already made room for Omarchy" FontWeight="Bold" />
-              <TextBlock Classes="dim body" Text="Keep Windows and leave C: as it is: you shrank it yourself, and Omarchy installs into that free space." />
+          <Border Classes="panel" Margin="30,0,0,0" IsVisible="{Binding KeepWindows}">
+            <StackPanel Spacing="10">
+              <TextBlock Text="Make room in Disk Management" FontWeight="Bold" />
+              <TextBlock Classes="dim body" Text="1  Right-click C: and choose Shrink Volume.&#10;2  Enter the amount to shrink in MB (20480 is 20 GB, 102400 is 100 GB) and choose Shrink. Leave the new space unallocated: don't make a volume in it.&#10;3  Come back here and choose Check again." />
+              <TextBlock Classes="dim body" FontSize="12" Text="If Windows offers less room than you expect, turn off hibernation (powercfg /h off) and Fast Startup, or shrink again after a restart." />
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button Content="Open Disk Management" Click="OpenDiskManagement" />
+                <Button Content="Check again" Click="CheckDisk" IsEnabled="{Binding !Busy}" />
+              </StackPanel>
+              <TextBlock Classes="body" Text="{Binding DiskFreeText}" Classes.ok="{Binding !DiskFreeLow}" Classes.warn="{Binding DiskFreeLow}" />
             </StackPanel>
-          </RadioButton>
-          <TextBlock Margin="30,0,0,0" Classes="body" FontSize="12" Text="{Binding DiskFreeText}" IsVisible="{Binding AlreadyDone}"
-                     Classes.dim="{Binding !DiskFreeLow}" Classes.warn="{Binding DiskFreeLow}" />
+          </Border>
           <RadioButton GroupName="windows" IsChecked="{Binding ReplaceWindows}">
             <StackPanel Spacing="6">
               <TextBlock Text="Replace Windows with Omarchy" FontWeight="Bold" />
               <TextBlock Classes="dim body" Text="Windows is left as it is now; Omarchy's installer erases the whole disk." />
             </StackPanel>
           </RadioButton>
+          <Border Classes="panel" Margin="30,0,0,0" IsVisible="{Binding ReplaceWindows}" BorderBrush="{StaticResource WarnBrush}">
+            <StackPanel Spacing="10">
+              <TextBlock Text="You are about to wipe Windows" FontWeight="Bold" Foreground="{StaticResource WarnBrush}" />
+              <TextBlock Classes="body" Text="The firmware this stick is about to carry comes out of Windows' own drivers. Nobody may redistribute it, so we can't hand you a copy later, and on some laptops reinstalling Windows is the only other way to get it back." />
+              <TextBlock Classes="body" Text="Keep this stick safe after the install, or copy its OMARCHY_FW folder somewhere you keep backups. It is what a reinstall or a rescue of Omarchy needs." />
+            </StackPanel>
+          </Border>
 
           <Border Classes="panel" IsVisible="{Binding BitLocker.On}" BorderBrush="{StaticResource WarnBrush}">
             <StackPanel Spacing="10">

@@ -76,6 +76,9 @@ public partial class MainWindow : Window
         if (files.Count > 0 && files[0].TryGetLocalPath() is { } path) model.UseLocalImage(path);
     }
 
+    void OpenDiskManagement(object? sender, RoutedEventArgs e) => model.OpenDiskManagement();
+    async void CheckDisk(object? sender, RoutedEventArgs e) => await model.CheckDiskAsync();
+
     async void SaveKey(object? sender, RoutedEventArgs e)
     {
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions

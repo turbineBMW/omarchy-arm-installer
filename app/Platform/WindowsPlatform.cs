@@ -86,25 +86,15 @@ public sealed class WindowsPlatform : IPlatform
     {
         var json = PowerShell("""
             $p = Get-Partition -DriveLetter C
-            $s = Get-PartitionSupportedSize -DriveLetter C
             $d = Get-Disk -Number $p.DiskNumber
-            [pscustomobject]@{ size = $p.Size; min = $s.SizeMin; free = $d.LargestFreeExtent } | ConvertTo-Json
+            [pscustomobject]@{ size = $p.Size; free = $d.LargestFreeExtent } | ConvertTo-Json
             """, "Reading C: and its disk");
         using var doc = JsonDocument.Parse(json);
-        return new SystemPartition(doc.RootElement.GetProperty("size").GetInt64(), doc.RootElement.GetProperty("min").GetInt64(),
-            doc.RootElement.GetProperty("free").GetInt64());
+        return new SystemPartition(doc.RootElement.GetProperty("size").GetInt64(), doc.RootElement.GetProperty("free").GetInt64());
     }, ct);
 
-    public Task ShrinkSystemPartitionAsync(long bytes, CancellationToken ct) => Task.Run(() =>
-    {
-        PowerShell($$"""
-            $p = Get-Partition -DriveLetter C
-            $s = Get-PartitionSupportedSize -DriveLetter C
-            $target = $p.Size - {{bytes}}
-            if ($target -lt $s.SizeMin) { throw "C: can shrink by at most $([math]::Floor(($p.Size - $s.SizeMin) / 1GB)) GB" }
-            Resize-Partition -DriveLetter C -Size $target
-            """, "Shrinking C:");
-    }, ct);
+    public void OpenDiskManagement() =>
+        Process.Start(new ProcessStartInfo("diskmgmt.msc") { UseShellExecute = true });
 
     public async Task WriteImageAsync(string image, UsbDisk disk, IProgress<double> progress, CancellationToken ct)
     {

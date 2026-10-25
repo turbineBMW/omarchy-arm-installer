@@ -22,10 +22,17 @@ public sealed class DemoPlatform : IPlatform
     public Task<BitLockerState> GetBitLockerAsync(CancellationToken ct) =>
         Task.FromResult(new BitLockerState(true, [("{1A2B3C4D-0000-0000-0000-000000000000}", "123456-234567-345678-456789-567890-678901-789012-890123")]));
 
-    public Task<SystemPartition> GetSystemPartitionAsync(CancellationToken ct) =>
-        Task.FromResult(new SystemPartition(510_000_000_000, 180_000_000_000, 96_000_000_000));
+    /// OMARCHY_DEMO_FREE_GB is the unallocated space found (default 96);
+    /// each check adds 64 GB, as if the user had just shrunk C:.
+    long free = (long.TryParse(Environment.GetEnvironmentVariable("OMARCHY_DEMO_FREE_GB"), out var gb) ? gb : 96) * 1_000_000_000;
+    public Task<SystemPartition> GetSystemPartitionAsync(CancellationToken ct)
+    {
+        var now = new SystemPartition(510_000_000_000, free);
+        free += 64_000_000_000;
+        return Task.FromResult(now);
+    }
 
-    public Task ShrinkSystemPartitionAsync(long bytes, CancellationToken ct) => Task.Delay(1500, ct);
+    public void OpenDiskManagement() => Core.Log.Info("Demo: would open Disk Management");
 
     public Task SuspendBitLockerAsync(int reboots, CancellationToken ct) => Task.Delay(500, ct);
 
