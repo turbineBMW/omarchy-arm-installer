@@ -1,4 +1,4 @@
-From 6e5a0856c21a73f7052c7b8f249b2a916391e0b5 Mon Sep 17 00:00:00 2001
+From c276901ee0e17c9ad1d75b0d513831251c7cd245 Mon Sep 17 00:00:00 2001
 From: Brandon Williams <turbine.bmw@gmail.com>
 Date: Sat, 24 Oct 2026 17:25:02 -0400
 Subject: [PATCH 4/4] Check device recipes' signatures, and let the system
@@ -18,31 +18,40 @@ the repository is retired, and omarchy-recipe remove takes it out of
 pacman.conf, drops its key, reinstalls Omarchy's own build of every
 package Omarchy has, and with --purge removes the ones only it had.
 
+The recipe installs from the media or the install fails. The first-boot
+fallback is gone: the stick is made to be complete, and a machine without
+its recipe may have no Wi-Fi to fetch it with (the Surface Pro 11's board
+file comes from the recipe). A failure now stops the install with pacman's
+output in the log instead of a system that looks installed and is not.
+
+Fixed on the way: the loop copying the recipe's files reused the variable
+holding the repository's name, so /etc/omarchy/recipe/repo said
+"info.json.sig", pacman -Slq found no packages, and nothing was installed.
+The copy is its own function now, with a test on what it writes.
+
 Tested: test/all passes, with a new test of omarchy-recipe against
-stubbed pacman, and keyring tests with a real ed25519 key.
+stubbed pacman, keyring tests with a real ed25519 key, and tests of the
+saved recipe files.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ---
- .../share/omarchy-iso/orchestrator/recipe.py  | 125 +++++++++-------
- .../share/omarchy-iso/recipe/omarchy-recipe   | 136 ++++++++++++++++++
- .../recipe/omarchy-recipe-check.service       |   9 ++
+ .../share/omarchy-iso/orchestrator/recipe.py  | 168 ++++++++++--------
+ .../share/omarchy-iso/recipe/omarchy-recipe   | 136 ++++++++++++++
+ .../recipe/omarchy-recipe-check.service       |   9 +
  .../recipe/omarchy-recipe-check.timer         |  10 ++
- .../recipe/omarchy-recipe-firstboot           |  13 ++
- .../recipe/omarchy-recipe-firstboot.service   |  15 ++
  .../omarchy-iso/recipe/omarchy-recipe.hook    |  11 ++
- test/unit/omarchy-recipe-test.sh              |  88 ++++++++++++
- test/unit/test_device_recipe.py               |  63 ++++++++
- 9 files changed, 417 insertions(+), 53 deletions(-)
+ test/unit/omarchy-recipe-test.sh              |  88 +++++++++
+ test/unit/test_device_recipe.py               |  93 ++++++++++
+ 7 files changed, 442 insertions(+), 73 deletions(-)
  create mode 100755 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe
  create mode 100644 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.service
  create mode 100644 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-check.timer
- create mode 100755 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot
- create mode 100644 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot.service
  create mode 100644 configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe.hook
  create mode 100644 test/unit/omarchy-recipe-test.sh
 
 diff --git a/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py b/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py
-index f1007ab..0656b98 100644
+index f1007ab..7b1cd01 100644
 --- a/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py
 +++ b/configs/airootfs/usr/share/omarchy-iso/orchestrator/recipe.py
 @@ -5,12 +5,19 @@ Windows) can put a recipe on the OMARCHY_FW partition:
@@ -60,8 +69,8 @@ index f1007ab..0656b98 100644
 +the image's offline mirror, and pacman checks every signature against a
 +keyring holding the recipe's key and nothing else. The repository is then
 +configured above [omarchy] for updates. When something they need is not on
-+the media, a first-boot service installs them once the machine is online
-+instead.
++the media, the install fails: the stick is made to be complete, and a
++machine without its recipe may have no Wi-Fi to fetch it with later.
 +
 +The installed system gets omarchy-recipe, which shows what the recipe is,
 +fetches the repository's description daily, says on updates when its
@@ -69,16 +78,17 @@ index f1007ab..0656b98 100644
  """
  
  from __future__ import annotations
-@@ -30,6 +37,8 @@ MEDIA_MOUNT = Path("/run/omarchy/recipe-media")
+@@ -29,7 +36,8 @@ MEDIA_MOUNT = Path("/run/omarchy/recipe-media")
+ # Inside the target, where arch-chroot does not hide it (it mounts its own /run).
  TARGET_MEDIA = "var/cache/omarchy/recipe"
  TARGET_RECIPE = "etc/omarchy/recipe"
- FIRSTBOOT = "omarchy-recipe-firstboot"
+-FIRSTBOOT = "omarchy-recipe-firstboot"
 +# The tool, its pacman hook and units, copied into the target.
 +FILES = Path("/usr/share/omarchy-iso/recipe")
  BEGIN = "# BEGIN OMARCHY DEVICE RECIPE"
  END = "# END OMARCHY DEVICE RECIPE"
  RESERVED_REPOS = {"options", "offline", "omarchy", "core", "extra", "multilib", "alarm", "aur", "platform"}
-@@ -58,8 +67,9 @@ def read(folder: Path) -> dict | None:
+@@ -58,8 +66,9 @@ def read(folder: Path) -> dict | None:
          return None
      if not all(isinstance(p, str) and re.fullmatch(r"[a-z0-9@._+-]+", p) for p in packages):
          return None
@@ -90,7 +100,7 @@ index f1007ab..0656b98 100644
      return recipe
  
  
-@@ -90,15 +100,33 @@ def offline_config(recipe: dict) -> str:
+@@ -90,15 +99,33 @@ def offline_config(recipe: dict) -> str:
      first, so its packages win, then the offline mirror."""
      name = recipe["repo"]["name"]
      return (
@@ -129,7 +139,7 @@ index f1007ab..0656b98 100644
  def online_section(recipe: dict) -> str:
      repo = recipe["repo"]
      return f"{BEGIN}\n[{repo['name']}]\nServer = {repo['server']}\n{END}\n"
-@@ -123,37 +151,31 @@ def _targets(recipe: dict, available: list[str], installed: set[str]) -> list[st
+@@ -123,37 +150,40 @@ def _targets(recipe: dict, available: list[str], installed: set[str]) -> list[st
      return [f"{name}/{p}" for p in wanted if p in available]
  
  
@@ -148,15 +158,12 @@ index f1007ab..0656b98 100644
 -rm -f "$recipe/pending"
 -"""
 +def _install_files(target: Path) -> None:
-+    """omarchy-recipe, its pacman hook, the daily check and the first-boot
-+    unit, with the check enabled."""
++    """omarchy-recipe, its pacman hook and the daily check, enabled."""
 +    copies = {
 +        "omarchy-recipe": ("usr/local/bin/omarchy-recipe", 0o755),
-+        FIRSTBOOT: (f"usr/local/bin/{FIRSTBOOT}", 0o755),
 +        "omarchy-recipe.hook": ("etc/pacman.d/hooks/90-omarchy-recipe.hook", 0o644),
 +        "omarchy-recipe-check.service": ("etc/systemd/system/omarchy-recipe-check.service", 0o644),
 +        "omarchy-recipe-check.timer": ("etc/systemd/system/omarchy-recipe-check.timer", 0o644),
-+        f"{FIRSTBOOT}.service": (f"etc/systemd/system/{FIRSTBOOT}.service", 0o644),
 +    }
 +    for name, (dest, mode) in copies.items():
 +        path = target / dest
@@ -177,10 +184,21 @@ index f1007ab..0656b98 100644
 -ExecStart=/usr/lib/omarchy/{FIRSTBOOT}
 -Restart=on-failure
 -RestartSec=5min
--
++def _save(saved: Path, recipe: dict) -> None:
++    """Keep the recipe, its key and the repository's signed description on
++    the installed system, for omarchy-recipe, with the repository's name and
++    key fingerprint on their own for scripts."""
++    saved.mkdir(parents=True, exist_ok=True)
++    for file in ("recipe.json", "key.asc", "info.json", "info.json.sig"):
++        if (MEDIA_MOUNT / "recipe" / file).is_file():
++            shutil.copy2(MEDIA_MOUNT / "recipe" / file, saved / file)
++    (saved / "repo").write_text(recipe["repo"]["name"] + "\n")
++    (saved / "fingerprint").write_text(recipe["repo"]["keyFingerprint"] + "\n")
+ 
 -[Install]
 -WantedBy=multi-user.target
 -"""
++
 +def _enable(target: Path, wanted_by: str, unit: str) -> None:
 +    wants = target / "etc/systemd/system" / f"{wanted_by}.wants"
 +    wants.mkdir(parents=True, exist_ok=True)
@@ -190,28 +208,70 @@ index f1007ab..0656b98 100644
  
  
  def _chroot(ctx: InstallContext, *cmd: str, capture: bool = False) -> subprocess.CompletedProcess:
-@@ -173,8 +195,15 @@ def install(ctx: InstallContext) -> None:
+@@ -172,11 +202,13 @@ def install(ctx: InstallContext) -> None:
+ 
      name = recipe["repo"]["name"]
      saved = ctx.target / TARGET_RECIPE
-     saved.mkdir(parents=True, exist_ok=True)
+-    saved.mkdir(parents=True, exist_ok=True)
 -    shutil.copy2(MEDIA_MOUNT / "recipe" / "recipe.json", saved / "recipe.json")
 -    shutil.copy2(MEDIA_MOUNT / "recipe" / "key.asc", saved / "key.asc")
-+    for name in ("recipe.json", "key.asc", "info.json", "info.json.sig"):
-+        if (MEDIA_MOUNT / "recipe" / name).is_file():
-+            shutil.copy2(MEDIA_MOUNT / "recipe" / name, saved / name)
+-    (saved / "repo").write_text(name + "\n")
+-    (saved / "fingerprint").write_text(recipe["repo"]["keyFingerprint"] + "\n")
++    _save(saved, recipe)
 +    # Nothing from a recipe whose key is not the one it names.
 +    if not make_keyring(saved / "gnupg", saved / "key.asc", recipe["repo"]["keyFingerprint"]):
 +        info("› the device recipe's key is not the one it names; leaving the recipe out")
 +        shutil.rmtree(saved, ignore_errors=True)
 +        return
 +    _install_files(ctx.target)
-     (saved / "repo").write_text(name + "\n")
-     (saved / "fingerprint").write_text(recipe["repo"]["keyFingerprint"] + "\n")
  
-@@ -217,14 +246,4 @@ def install(ctx: InstallContext) -> None:
-         (saved / "packages").write_text("\n".join(recipe["packages"]) + "\n")
-     info("› the device recipe finishes on first boot, once the machine is online")
-     (saved / "pending").touch()
+     media = ctx.target / TARGET_MEDIA
+     media.mkdir(parents=True, exist_ok=True)
+@@ -187,16 +219,23 @@ def install(ctx: InstallContext) -> None:
+     conf.write_text(offline_config(recipe))
+     config = f"/{TARGET_RECIPE}/pacman-offline.conf"
+ 
+-    installed_ok = False
++    # The stick is made to be complete: what cannot be installed from it is
++    # an installer or recipe bug, and the install fails rather than leaving
++    # the machine without the recipe. On the Surface Pro 11 that would be a
++    # machine without Wi-Fi, which no later step could rescue.
+     _mask_mkinitcpio_pacman_hooks(ctx, ctx.target, TARGET_DEFERRED_BOOT_HOOKS)
+     try:
+-        if _chroot(ctx, "pacman", "--config", config, "-Sy").returncode == 0:
+-            available = _chroot(ctx, "pacman", "--config", config, "-Slq", name, capture=True).stdout.split()
+-            installed = set(_chroot(ctx, "pacman", "-Qq", capture=True).stdout.split())
+-            targets = _targets(recipe, available, installed)
+-            (saved / "packages").write_text("\n".join(t.split("/", 1)[1] for t in targets) + "\n")
+-            info(f"› installing the device recipe: {' '.join(targets)}")
+-            installed_ok = bool(targets) and _chroot(ctx, "pacman", "--config", config, "-S", "--noconfirm", *targets).returncode == 0
++        if _chroot(ctx, "pacman", "--config", config, "-Sy").returncode != 0:
++            raise RuntimeError(f"pacman could not read the device recipe's repository {name} from the install media")
++        available = _chroot(ctx, "pacman", "--config", config, "-Slq", name, capture=True).stdout.split()
++        installed = set(_chroot(ctx, "pacman", "-Qq", capture=True).stdout.split())
++        targets = _targets(recipe, available, installed)
++        if not targets:
++            raise RuntimeError(f"the install media's {name} repository has none of the device recipe's packages")
++        (saved / "packages").write_text("\n".join(t.split("/", 1)[1] for t in targets) + "\n")
++        info(f"› installing the device recipe: {' '.join(targets)}")
++        if _chroot(ctx, "pacman", "--config", config, "-S", "--noconfirm", *targets).returncode != 0:
++            raise RuntimeError("the device recipe's packages did not install from the install media; see pacman's output above")
+     finally:
+         _unmask_mkinitcpio_pacman_hooks(ctx, ctx.target, TARGET_DEFERRED_BOOT_HOOKS)
+         subprocess.run(["umount", str(media)], check=False)
+@@ -208,23 +247,6 @@ def install(ctx: InstallContext) -> None:
+     add_online_repo(ctx.target / "etc" / "pacman.conf", recipe)
+     fingerprint = recipe["repo"]["keyFingerprint"]
+     key = f"/{TARGET_RECIPE}/key.asc"
+-    keyed = (_chroot(ctx, "pacman-key", "--add", key).returncode == 0
+-             and _chroot(ctx, "pacman-key", "--lsign-key", fingerprint).returncode == 0)
+-
+-    if installed_ok and keyed:
+-        return
+-    if not (saved / "packages").exists():
+-        (saved / "packages").write_text("\n".join(recipe["packages"]) + "\n")
+-    info("› the device recipe finishes on first boot, once the machine is online")
+-    (saved / "pending").touch()
 -    script = ctx.target / "usr/lib/omarchy" / FIRSTBOOT
 -    script.parent.mkdir(parents=True, exist_ok=True)
 -    script.write_text(FIRSTBOOT_SCRIPT)
@@ -223,10 +283,12 @@ index f1007ab..0656b98 100644
 -    link = wants / f"{FIRSTBOOT}.service"
 -    if not link.exists():
 -        link.symlink_to(f"/etc/systemd/system/{FIRSTBOOT}.service")
-+    _enable(ctx.target, "multi-user.target", f"{FIRSTBOOT}.service")
++    if (_chroot(ctx, "pacman-key", "--add", key).returncode != 0
++            or _chroot(ctx, "pacman-key", "--lsign-key", fingerprint).returncode != 0):
++        raise RuntimeError(f"pacman-key would not trust the device recipe's key {fingerprint}")
 diff --git a/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe
 new file mode 100755
-index 0000000..c1a55e5
+index 0000000..6a41f71
 --- /dev/null
 +++ b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe
 @@ -0,0 +1,136 @@
@@ -353,7 +415,7 @@ index 0000000..c1a55e5
 +    fi
 +  fi
 +
-+  systemctl disable --now omarchy-recipe-check.timer omarchy-recipe-firstboot.service >/dev/null 2>&1 || true
++  systemctl disable --now omarchy-recipe-check.timer >/dev/null 2>&1 || true
 +  rm -rf "$state"
 +  mv "$recipe" "$recipe.removed-$(date +%Y%m%d%H%M%S)"
 +  echo "Done: $name is removed."
@@ -397,46 +459,6 @@ index 0000000..3ff12cd
 +
 +[Install]
 +WantedBy=timers.target
-diff --git a/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot
-new file mode 100755
-index 0000000..9a9d16c
---- /dev/null
-+++ b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot
-@@ -0,0 +1,13 @@
-+#!/bin/bash
-+# Installs this machine's device recipe once it is online; the install could
-+# not, because something the packages need was not on the install media.
-+set -u
-+recipe=/etc/omarchy/recipe
-+read -r repo < "$recipe/repo"
-+read -r fingerprint < "$recipe/fingerprint"
-+if ! pacman-key --list-keys "$fingerprint" >/dev/null 2>&1; then
-+  pacman-key --add "$recipe/key.asc" && pacman-key --lsign-key "$fingerprint" || exit 1
-+fi
-+mapfile -t packages < "$recipe/packages"
-+pacman -Sy --noconfirm --needed "${packages[@]/#/$repo/}" || exit 1
-+rm -f "$recipe/pending"
-diff --git a/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot.service b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot.service
-new file mode 100644
-index 0000000..4684bed
---- /dev/null
-+++ b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe-firstboot.service
-@@ -0,0 +1,15 @@
-+[Unit]
-+Description=Install this machine's device recipe
-+Wants=network-online.target
-+After=network-online.target
-+ConditionPathExists=/etc/omarchy/recipe/pending
-+StartLimitIntervalSec=0
-+
-+[Service]
-+Type=oneshot
-+ExecStart=/usr/local/bin/omarchy-recipe-firstboot
-+Restart=on-failure
-+RestartSec=5min
-+
-+[Install]
-+WantedBy=multi-user.target
 diff --git a/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe.hook b/configs/airootfs/usr/share/omarchy-iso/recipe/omarchy-recipe.hook
 new file mode 100644
 index 0000000..bd7ea75
@@ -549,7 +571,7 @@ index 0000000..de69d8e
 +grep -q "pacman -Rns.*linux-omarchy" "$work/calls" && fail "--purge removes a package Omarchy has"
 +echo "omarchy-recipe: ok"
 diff --git a/test/unit/test_device_recipe.py b/test/unit/test_device_recipe.py
-index 7a15433..53491c4 100644
+index 7a15433..be0bf15 100644
 --- a/test/unit/test_device_recipe.py
 +++ b/test/unit/test_device_recipe.py
 @@ -2,6 +2,9 @@
@@ -594,7 +616,7 @@ index 7a15433..53491c4 100644
  
  class TargetsTest(unittest.TestCase):
      def test_recipe_packages_and_what_the_repository_replaces(self):
-@@ -121,6 +135,54 @@ class TargetsTest(unittest.TestCase):
+@@ -121,6 +135,84 @@ class TargetsTest(unittest.TestCase):
                           ["surface-pro-11/surface-pro-11-plugins"])
  
  
@@ -642,14 +664,44 @@ index 7a15433..53491c4 100644
 +        self.assertTrue((target / "etc/pacman.d/hooks/90-omarchy-recipe.hook").is_file())
 +        link = target / "etc/systemd/system/timers.target.wants/omarchy-recipe-check.timer"
 +        self.assertEqual(os.readlink(link), "/etc/systemd/system/omarchy-recipe-check.timer")
-+        self.assertFalse((target / "etc/systemd/system/multi-user.target.wants").exists(),
-+                         "the first-boot install is armed only when the install could not finish")
++
++
++class SaveTest(unittest.TestCase):
++    """What the installed system keeps of the recipe: the files from the
++    media, and the repository's name and key on their own."""
++
++    def test_repository_name_and_fingerprint(self):
++        media = Path(tempfile.mkdtemp())
++        (media / "recipe").mkdir()
++        for file in ("recipe.json", "key.asc", "info.json", "info.json.sig"):
++            (media / "recipe" / file).write_text(file)
++        saved = Path(tempfile.mkdtemp()) / "etc/omarchy/recipe"
++        with mock.patch.object(recipe, "MEDIA_MOUNT", media):
++            recipe._save(saved, a_recipe())
++        # A loop variable once shadowed the name here, and `repo` came out as
++        # the last file copied.
++        self.assertEqual((saved / "repo").read_text(), "surface-pro-11\n")
++        self.assertEqual((saved / "fingerprint").read_text(), FINGERPRINT + "\n")
++        self.assertEqual((saved / "info.json.sig").read_text(), "info.json.sig")
++        self.assertEqual(sorted(p.name for p in saved.iterdir()),
++                         ["fingerprint", "info.json", "info.json.sig", "key.asc", "recipe.json", "repo"])
++
++    def test_without_the_description(self):
++        media = Path(tempfile.mkdtemp())
++        (media / "recipe").mkdir()
++        (media / "recipe" / "recipe.json").write_text("{}")
++        (media / "recipe" / "key.asc").write_text("key")
++        saved = Path(tempfile.mkdtemp()) / "recipe"
++        with mock.patch.object(recipe, "MEDIA_MOUNT", media):
++            recipe._save(saved, a_recipe())
++        self.assertEqual((saved / "repo").read_text(), "surface-pro-11\n")
++        self.assertFalse((saved / "info.json").exists())
 +
 +
  class StageTest(unittest.TestCase):
      def test_keeps_the_partition_with_a_recipe_mounted(self):
          media = Path(tempfile.mkdtemp())
-@@ -137,6 +199,7 @@ class StageTest(unittest.TestCase):
+@@ -137,6 +229,7 @@ class StageTest(unittest.TestCase):
                  if cmd[-2] == "/dev/sdb3":
                      (folder / "repo").mkdir(parents=True)
                      (folder / "repo" / "surface-pro-11.db").touch()
