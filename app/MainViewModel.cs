@@ -692,7 +692,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         r.Panel is { } panel ? $"Panel {panel}" : null,
         $"{r.Chids.Count} hardware IDs, {r.AcpiTables.Count} ACPI tables, {r.DeviceCount} devices" +
             (r.ProblemDevices > 0 ? $" ({r.ProblemDevices} without a driver)" : ""),
-        $"{r.FirmwareFiles} firmware files in {r.FirmwarePackages} driver packages, listed by name and hash",
+        $"{r.FirmwareFiles} firmware files in {r.FirmwarePackages} driver packages, listed by name and hash, and their {r.InfFiles} INF files",
+        $"{r.RegistryKeys} registry keys: each device's settings and its driver's, the resources drivers were given, the processors and firmware" +
+            (r.HasWindowsFacts ? ", and Windows' view of storage, battery, power states, displays and the driver store" : ""),
     }.Where(l => !string.IsNullOrWhiteSpace(l)));
 
     public string ReportLeftOut => Report is null ? "" : string.Join("\n", Report.Redactions.Select(r => $"\u00b7 {r}"));

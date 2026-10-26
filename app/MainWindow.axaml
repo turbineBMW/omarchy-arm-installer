@@ -89,7 +89,9 @@
     </Border>
 
     <!-- Current step -->
-    <ScrollViewer Grid.Column="1" Padding="36,28,36,8">
+    <!-- The scrollbar stays visible when a step runs past the window, so a
+         button or result below the fold is not mistaken for a missing one. -->
+    <ScrollViewer x:Name="Page" Grid.Column="1" Padding="36,28,36,24" AllowAutoHide="False">
       <StackPanel Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
         <TextBlock Text="{Binding StepTitle}" Classes="h1" />
 
@@ -141,15 +143,15 @@
         <!-- Hardware report -->
         <StackPanel Classes="step" IsVisible="{Binding IsCollectStep}">
           <TextBlock Classes="body" Text="Linux runs on Arm laptops through a device tree: a description of the hardware, written by hand for each model. Writing one takes what this computer's firmware and Windows know about it. This reads that and saves it as one zip file." />
+          <Button Classes="primary" Content="Collect the report" Click="Collect" IsVisible="{Binding CanCollect}" HorizontalAlignment="Left" />
           <Border Classes="panel">
             <StackPanel Spacing="4">
               <TextBlock Text="What the report holds" FontWeight="Bold" />
-              <TextBlock Classes="dim body" Text="· The firmware's ACPI and SMBIOS tables&#10;· The hardware IDs Linux's boot loader picks a device tree by&#10;· Every device, its driver and where it sits in the firmware&#10;· The built-in display's identity (EDID)&#10;· The names and checksums of the firmware files in the drivers, not the files" />
+              <TextBlock Classes="dim body" Text="· The firmware's ACPI and SMBIOS tables&#10;· The hardware IDs Linux's boot loader picks a device tree by&#10;· Every device, each property Windows has for it, its driver and where it sits in the firmware&#10;· Each device's and driver's registry settings, and the memory, interrupts and bus connections drivers were given&#10;· The built-in display's identity (EDID) and modes&#10;· The driver packages' INF files, and the names and checksums of the firmware files in them, not the firmware itself&#10;· What Windows' tools say about storage, the battery, power states, the GPU, thermal zones and the driver store" />
               <TextBlock Text="What it leaves out" FontWeight="Bold" Margin="0,8,0,0" />
-              <TextBlock Classes="dim body" Text="Serial numbers, the system UUID, the Windows product key, MAC addresses, and paired Bluetooth devices, printers and drives. You can look inside the zip before you send it." />
+              <TextBlock Classes="dim body" Text="Serial numbers, the system UUID, the Windows product key, MAC addresses, the computer and user names, paired Bluetooth devices, printers and drives, and registry values named as identifiers. You can look inside the zip before you send it." />
             </StackPanel>
           </Border>
-          <Button Classes="primary" Content="Collect the report" Click="Collect" IsVisible="{Binding CanCollect}" HorizontalAlignment="Left" />
           <ItemsControl ItemsSource="{Binding ReportLog}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="local:LogLine">

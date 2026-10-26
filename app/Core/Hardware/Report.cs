@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace OmarchyArmInstaller.Core.Hardware;
@@ -12,14 +13,15 @@ public sealed record FirmwareFile(string Name, long Size, string Sha256);
 /// name and hash only, and where to look for the package again.
 public sealed record FirmwarePackageInfo(
     string Folder, string? Inf, string? Provider, string? Version, string? Date,
-    IReadOnlyList<string> Devices, string? CatalogSearch, IReadOnlyList<FirmwareFile> Files);
+    IReadOnlyList<string> Devices, string? CatalogSearch, IReadOnlyList<FirmwareFile> Files,
+    IReadOnlyList<FirmwareFile> OtherFiles, IReadOnlyList<string> Infs);
 
 /// A finished report: the zip, and what the person is shown and sends.
 public sealed record HardwareReport(
     string ZipPath, string Id, SmbiosIdentity Identity, string? Processor, string? Panel,
     IReadOnlyList<ChidValue> Chids, IReadOnlyList<string> AcpiTables, int DeviceCount, int ProblemDevices,
-    int FirmwareFiles, int FirmwarePackages, IReadOnlyList<string> Redactions, IReadOnlyList<string> Problems,
-    string Summary)
+    int FirmwareFiles, int FirmwarePackages, int InfFiles, int RegistryKeys, bool HasWindowsFacts,
+    IReadOnlyList<string> Redactions, IReadOnlyList<string> Problems, string Summary)
 {
     public string Model => string.Join(" ", new[] { Identity.Manufacturer, Identity.ProductName }.Where(s => !string.IsNullOrWhiteSpace(s)))
         is { Length: > 0 } m ? m : "Unknown computer";
@@ -27,11 +29,15 @@ public sealed record HardwareReport(
 
 /// Turns what a hardware source read into one zip a device-tree writer can
 /// work from: ACPI tables, the SMBIOS table, CHIDs, EDIDs, the device list
-/// and the firmware the drivers carry, with everything that identifies this
-/// one machine (rather than the model) taken out.
+/// with every property, each device's and driver's registry settings, the
+/// resources drivers were given, the driver packages' INF files and the
+/// firmware they carry, and what Windows' own tools say about storage, power
+/// and displays, with everything that identifies this one machine (rather
+/// than the model) taken out.
 public static class ReportBuilder
 {
-    public const int FormatVersion = 1;
+    /// 2: every device property, registry keys, INF files and windows.json.
+    public const int FormatVersion = 2;
 
     /// Tables that hold something personal, or that no device tree needs.
     static readonly Dictionary<string, string> LeftOutTables = new()
@@ -61,6 +67,9 @@ public static class ReportBuilder
 
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
+    /// Registry binaries larger than this go in registry/blobs/ as files.
+    const int InlineBlobBytes = 64 * 1024;
+
     public static HardwareReport Build(CollectedHardware hw, string folder, string toolVersion, IProgress<string>? status = null,
         CancellationToken ct = default)
     {
@@ -72,11 +81,13 @@ public static class ReportBuilder
         // SMBIOS
         SmbiosIdentity identity = new(null, null, null, null, null, null, null, null, null, null, null, null, null);
         string? processor = null;
+        var smbiosSecrets = new List<string>();
         if (hw.Smbios is { Length: > 0 })
         {
             var structures = Smbios.Parse(hw.Smbios);
             identity = Smbios.Identity(structures);
             processor = structures.FirstOrDefault(s => s.Type == 4)?.String(0x10)?.Trim();
+            smbiosSecrets = Smbios.PersonalValues(structures);
             var (redacted, what) = Smbios.Redact(structures);
             redactions.AddRange(what);
             files["smbios/dmi.bin"] = DmidecodeDump(Smbios.Serialize(redacted), hw.SmbiosVersion);
@@ -85,6 +96,8 @@ public static class ReportBuilder
         {
             problems.Add("The SMBIOS table could not be read.");
         }
+        // Everything else gets the same secrets taken out, with matching placeholders.
+        var scrub = new Scrubber(smbiosSecrets, hw.Secrets, redactions);
 
         // EDID: the panel's ID goes into the extra CHIDs.
         string? panel = null;
@@ -135,14 +148,76 @@ public static class ReportBuilder
         }
         if (hw.Acpi.Count == 0) problems.Add("No ACPI tables could be read.");
 
-        // Devices
-        var devices = RedactDevices(hw.Devices, redactions);
-        files["devices.json"] = JsonSerializer.SerializeToUtf8Bytes(devices, Json);
+        // Devices: the list with every property; their registry keys go in registry/.
+        var devices = RedactDevices(hw.Devices, scrub, redactions);
+        files["devices.json"] = JsonSerializer.SerializeToUtf8Bytes(devices.Select(d => d with { EnumKey = null, DriverKey = null }), Json);
 
-        // Firmware inventory: names and hashes, never the files.
+        // Firmware inventory: names and hashes, never the files; the INFs whole.
         status?.Report("Hashing the firmware in the drivers");
-        var packages = FirmwareInventory(hw.Devices, ct);
+        var packages = FirmwareInventory(hw.Devices, files, ct);
         files["firmware.json"] = JsonSerializer.SerializeToUtf8Bytes(packages, Json);
+        var infFiles = packages.Sum(p => p.Infs.Count);
+
+        // Registry: each device's own key and its driver's, the drivers' services,
+        // and the system-wide hardware description.
+        status?.Report("Writing the registry keys");
+        var registryKeys = 0;
+        var deviceKeys = new SortedDictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in devices.Where(d => d.EnumKey is not null || d.DriverKey is not null))
+        {
+            ct.ThrowIfCancellationRequested();
+            var enumKey = d.EnumKey is null ? null : Externalize(d.EnumKey, files);
+            var driverKey = d.DriverKey is null ? null : Externalize(d.DriverKey, files);
+            registryKeys += (enumKey?.Count ?? 0) + (driverKey?.Count ?? 0);
+            deviceKeys[d.InstanceId] = new { driver = d.Driver, enumKey, driverKey };
+        }
+        if (deviceKeys.Count > 0) files["registry/devices.json"] = JsonSerializer.SerializeToUtf8Bytes(deviceKeys, Json);
+        var keptServices = new HashSet<string>(devices.Select(d => d.Service).OfType<string>(), StringComparer.OrdinalIgnoreCase);
+        var services = new SortedDictionary<string, RegistryDump>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, dump) in hw.Services.Where(s => keptServices.Contains(s.Key)))
+        {
+            ct.ThrowIfCancellationRequested();
+            services[name] = Externalize(scrub.Dump(dump), files);
+            registryKeys += services[name].Count;
+        }
+        if (services.Count > 0) files["registry/services.json"] = JsonSerializer.SerializeToUtf8Bytes(services, Json);
+        var system = new SortedDictionary<string, RegistryDump>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (path, dump) in hw.Registry)
+        {
+            ct.ThrowIfCancellationRequested();
+            system[path] = Externalize(scrub.Dump(dump), files);
+            registryKeys += system[path].Count;
+        }
+        if (system.Count > 0) files["registry/system.json"] = JsonSerializer.SerializeToUtf8Bytes(system, Json);
+        if (scrub.DroppedValues > 0) redactions.Add($"{scrub.DroppedValues} registry values and properties named as serial numbers, addresses or identifiers");
+
+        // What Windows computed as this machine's CHIDs, against this report's.
+        List<string> windowsChids = [];
+        if (hw.Registry.TryGetValue(@"SYSTEM\CurrentControlSet\Control\SystemInformation", out var info)
+            && info.Values.TryGetValue("ComputerHardwareIds", out var ids) && ids.Value is string[] list)
+        {
+            windowsChids = list.Select(x => x.Trim('{', '}').ToLowerInvariant()).ToList();
+            var ours = chids.Select(c => c.Value.ToString().ToLowerInvariant()).ToHashSet();
+            var missing = windowsChids.Where(x => !ours.Contains(x)).ToList();
+            if (missing.Count > 0) problems.Add($"Windows lists {missing.Count} hardware IDs this report did not compute: {string.Join(", ", missing)}");
+        }
+
+        // Windows' own view: storage, battery, power states, GPU, displays, the driver store.
+        JsonNode? windows = null;
+        if (hw.WindowsJson is { Length: > 0 } json)
+        {
+            try
+            {
+                windows = JsonNode.Parse(json);
+                scrub.Json(windows);
+                files["windows.json"] = Encoding.UTF8.GetBytes(windows!.ToJsonString(Json));
+            }
+            catch (JsonException e)
+            {
+                problems.Add($"Windows' view of the hardware could not be read: {e.Message}");
+                windows = null;
+            }
+        }
 
         var model = string.Join(" ", new[] { identity.Manufacturer, identity.ProductName }.Where(s => !string.IsNullOrWhiteSpace(s)));
         files["hwids.json"] = JsonSerializer.SerializeToUtf8Bytes(new
@@ -166,6 +241,7 @@ public static class ReportBuilder
             processor,
             panel,
             chids = chids.Select(c => new { type = c.Type, fields = c.Fields, value = c.Value.ToString() }),
+            windowsChids,
             smbiosVersion = $"{hw.SmbiosVersion.Major}.{hw.SmbiosVersion.Minor}",
             acpi,
             displays,
@@ -177,7 +253,8 @@ public static class ReportBuilder
         var problemDevices = devices.Count(d => d.Problem is > 0);
         var firmwareFiles = packages.Sum(p => p.Files.Count);
         var summary = Summary(id, created, toolVersion, hw.Os, identity, processor, panel, chids, acpiNames,
-            devices.Count, problemDevices, firmwareFiles, packages.Count, redactions.Distinct().ToList(), problems);
+            devices.Count, problemDevices, firmwareFiles, packages.Count, infFiles, registryKeys, windows is not null,
+            redactions.Distinct().ToList(), problems);
         files["summary.md"] = Encoding.UTF8.GetBytes(summary);
 
         Directory.CreateDirectory(folder);
@@ -194,7 +271,26 @@ public static class ReportBuilder
         }
 
         return new HardwareReport(zip, id, identity, processor, panel, chids, acpiNames, devices.Count, problemDevices,
-            firmwareFiles, packages.Count, redactions.Distinct().ToList(), problems, summary);
+            firmwareFiles, packages.Count, infFiles, registryKeys, windows is not null, redactions.Distinct().ToList(), problems, summary);
+    }
+
+    /// A dump with its large binaries written as files under registry/blobs/.
+    static RegistryDump Externalize(RegistryDump dump, Dictionary<string, byte[]> files)
+    {
+        var result = new RegistryDump();
+        foreach (var (name, v) in dump.Values)
+        {
+            if (v.Value is byte[] { Length: > InlineBlobBytes } data)
+            {
+                var sha = Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
+                var file = $"registry/blobs/{sha}.bin";
+                files[file] = data;
+                result.Values[name] = v with { Value = new { file, size = data.Length, sha256 = sha } };
+            }
+            else result.Values[name] = v;
+        }
+        foreach (var (name, key) in dump.Keys) result.Keys[name] = Externalize(key, files);
+        return result;
     }
 
     public static string Slug(string text) =>
@@ -224,12 +320,7 @@ public static class ReportBuilder
 
     // ---------- Devices ----------
 
-    // A MAC address or other 12-digit hex identifier, not the last group of a GUID.
-    static readonly Regex Mac = new("(?<![0-9A-Fa-f-])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f])|(?<![0-9A-Fa-f-])[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])");
-    // USB devices with a serial number use it as the last part of their ID.
-    static readonly Regex UsbSerial = new(@"^((?:USB|USB4|HID|WINUSB)\\[^\\]+\\)([^\\&]{4,})$", RegexOptions.IgnoreCase);
-
-    public static List<DeviceInfo> RedactDevices(IReadOnlyList<DeviceInfo> all, List<string> redactions)
+    public static List<DeviceInfo> RedactDevices(IReadOnlyList<DeviceInfo> all, Scrubber scrub, List<string> redactions)
     {
         var dropped = new HashSet<string>(all.Where(d => PersonalEnumerators.Any(p => d.InstanceId.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
             .Select(d => d.InstanceId), StringComparer.OrdinalIgnoreCase);
@@ -249,20 +340,7 @@ public static class ReportBuilder
         if (left > 0) redactions.Add($"{left} Bluetooth, printer, drive, network and audio-endpoint devices");
 
         // The same secret gets the same placeholder, so parent links still match.
-        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var counted = false;
-        string Redact(string value)
-        {
-            var m = UsbSerial.Match(value);
-            if (m.Success) value = m.Groups[1].Value + Placeholder(m.Groups[2].Value);
-            return Mac.Replace(value, x => Placeholder(x.Value));
-        }
-        string Placeholder(string secret)
-        {
-            if (!map.TryGetValue(secret, out var p)) map[secret] = p = $"redacted{map.Count + 1}";
-            if (!counted) { redactions.Add("USB serial numbers and MAC addresses in device IDs"); counted = true; }
-            return p;
-        }
+        string Redact(string value) => scrub.Text(value);
         string? R(string? v) => v is null ? null : Redact(v);
 
         return kept.Select(d => d with
@@ -270,16 +348,25 @@ public static class ReportBuilder
             InstanceId = Redact(d.InstanceId),
             Parent = R(d.Parent),
             Name = R(d.Name),
+            Manufacturer = R(d.Manufacturer),
             HardwareIds = d.HardwareIds.Select(Redact).ToArray(),
             CompatibleIds = d.CompatibleIds.Select(Redact).ToArray(),
             LocationPaths = d.LocationPaths.Select(Redact).ToArray(),
             DriverFolder = d.DriverFolder is null ? null : Path.GetFileName(d.DriverFolder.TrimEnd('\\', '/')),
+            Properties = d.Properties.Select(scrub.Property).ToList(),
+            EnumKey = d.EnumKey is null ? null : scrub.Dump(d.EnumKey),
+            DriverKey = d.DriverKey is null ? null : scrub.Dump(d.DriverKey),
         }).OrderBy(d => d.InstanceId, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     // ---------- Firmware ----------
 
-    public static List<FirmwarePackageInfo> FirmwareInventory(IReadOnlyList<DeviceInfo> devices, CancellationToken ct)
+    /// Every file in the driver packages of the present devices: the firmware
+    /// by name, size and hash, the drivers and plumbing the same way, and the
+    /// INF files themselves, which say which device loads which firmware and
+    /// what settings its driver gets, added to files under drivers/.
+    public static List<FirmwarePackageInfo> FirmwareInventory(IReadOnlyList<DeviceInfo> devices, Dictionary<string, byte[]> files,
+        CancellationToken ct)
     {
         var result = new List<FirmwarePackageInfo>();
         foreach (var group in devices.Where(d => d.DriverFolder is not null)
@@ -287,29 +374,41 @@ public static class ReportBuilder
         {
             ct.ThrowIfCancellationRequested();
             if (!Directory.Exists(group.Key)) continue;
+            var folder = Path.GetFileName(group.Key.TrimEnd('\\', '/'));
             var found = new List<FirmwareFile>();
+            var others = new List<FirmwareFile>();
+            var infs = new List<string>();
             foreach (var path in Directory.EnumerateFiles(group.Key, "*", SearchOption.AllDirectories).Order(StringComparer.OrdinalIgnoreCase))
             {
-                if (NotFirmware.Contains(Path.GetExtension(path))) continue;
+                var relative = Path.GetRelativePath(group.Key, path).Replace('\\', '/');
                 try
                 {
                     using var stream = File.OpenRead(path);
-                    found.Add(new FirmwareFile(Path.GetRelativePath(group.Key, path).Replace('\\', '/'), stream.Length,
-                        Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant()));
+                    var file = new FirmwareFile(relative, stream.Length, Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant());
+                    (NotFirmware.Contains(Path.GetExtension(path)) ? others : found).Add(file);
+                    if (Path.GetExtension(path).Equals(".inf", StringComparison.OrdinalIgnoreCase) && stream.Length <= 4 * 1024 * 1024)
+                    {
+                        stream.Position = 0;
+                        var text = new byte[stream.Length];
+                        stream.ReadExactly(text);
+                        var name = $"drivers/{folder}/{relative}";
+                        files[name] = text;
+                        infs.Add(name);
+                    }
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException)
                 {
                     Log.Info($"Firmware: could not hash {path}: {e.Message}");
                 }
             }
-            if (found.Count == 0) continue;
+            if (found.Count == 0 && others.Count == 0) continue;
             var first = group.First();
             var hwid = group.SelectMany(d => d.HardwareIds).FirstOrDefault();
             result.Add(new FirmwarePackageInfo(
-                Path.GetFileName(group.Key.TrimEnd('\\', '/')), first.Inf, first.DriverProvider, first.DriverVersion, first.DriverDate,
+                folder, first.Inf, first.DriverProvider, first.DriverVersion, first.DriverDate,
                 group.Select(d => d.Name ?? d.InstanceId).Distinct().Order().ToList(),
                 hwid is null ? null : $"https://www.catalog.update.microsoft.com/Search.aspx?q={Uri.EscapeDataString(hwid)}",
-                found));
+                found, others, infs));
         }
         return result.OrderBy(p => p.Folder, StringComparer.OrdinalIgnoreCase).ToList();
     }
@@ -318,7 +417,7 @@ public static class ReportBuilder
 
     static string Summary(string id, string created, string tool, string os, SmbiosIdentity idn, string? processor, string? panel,
         IReadOnlyList<ChidValue> chids, IReadOnlyList<string> acpi, int devices, int problemDevices, int firmwareFiles,
-        int packages, IReadOnlyList<string> redactions, IReadOnlyList<string> problems)
+        int packages, int infFiles, int registryKeys, bool windows, IReadOnlyList<string> redactions, IReadOnlyList<string> problems)
     {
         var s = new StringBuilder();
         var model = string.Join(" ", new[] { idn.Manufacturer, idn.ProductName }.Where(x => !string.IsNullOrWhiteSpace(x)));
@@ -352,8 +451,11 @@ public static class ReportBuilder
         s.AppendLine($"- `acpi/`: {acpi.Count} ACPI tables ({string.Join(", ", acpi)}). Disassemble with `iasl -d acpi/dsdt.dat`.");
         s.AppendLine("- `smbios/dmi.bin`: the SMBIOS table; read it with `dmidecode --from-dump smbios/dmi.bin`.");
         s.AppendLine("- `edid/`: display EDIDs.");
-        s.AppendLine($"- `devices.json`: {devices} devices with hardware IDs, ACPI paths and drivers{(problemDevices > 0 ? $"; {problemDevices} without a working driver" : "")}.");
-        s.AppendLine($"- `firmware.json`: {firmwareFiles} firmware files in {packages} driver packages, by name, size and SHA-256, with a Microsoft Update Catalog search for each package. The files themselves are not included.");
+        s.AppendLine($"- `devices.json`: {devices} devices with hardware IDs, ACPI paths, drivers and every property the configuration manager has for them{(problemDevices > 0 ? $"; {problemDevices} without a working driver" : "")}. Binary values are base64.");
+        s.AppendLine($"- `firmware.json`: {firmwareFiles} firmware files in {packages} driver packages, by name, size and SHA-256, with a Microsoft Update Catalog search for each package, and the packages' other files the same way. The firmware itself is not included.");
+        s.AppendLine($"- `drivers/`: the {infFiles} INF files of those packages, which say which device loads which firmware and what settings its driver gets.");
+        s.AppendLine($"- `registry/`: {registryKeys} registry keys. `devices.json` holds each device's own key (Device Parameters, LogConf) and its driver's settings key under Control\\Class; `services.json` the drivers' service keys; `system.json` HARDWARE\\DESCRIPTION\\System (processors, firmware, configuration data), DEVICEMAP, RESOURCEMAP (the memory, interrupts and bus connections each driver was given, decoded beside the raw value), SystemInformation (Windows' own CHIDs) and Secure Boot's state. Binaries over 64 KiB are in `blobs/`.");
+        if (windows) s.AppendLine("- `windows.json`: what Windows' tools report: the storage bus and disks, the battery, the power states the firmware offers (`powercfg /a`), the GPU and display modes, network adapters, thermal zones, the TPM, and every third-party package in the driver store.");
         s.AppendLine();
         s.AppendLine("## Left out for privacy");
         s.AppendLine();

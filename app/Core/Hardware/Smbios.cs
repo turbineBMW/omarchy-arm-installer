@@ -98,9 +98,9 @@ public static class Smbios
         var board = structures.FirstOrDefault(s => s.Type == 2);
         var chassis = structures.FirstOrDefault(s => s.Type == 3);
 
-        // 0xFF in both release bytes means the BIOS does not report them.
+        // 0xFF in both release bytes means the BIOS does not report them, but
+        // Windows hashes them as "ff" all the same, so its CHIDs 0-2 match.
         byte? major = bios?.Byte(0x14), minor = bios?.Byte(0x15);
-        if (major == 0xFF && minor == 0xFF) major = minor = null;
 
         return new SmbiosIdentity(
             system?.String(0x04), system?.String(0x1A), system?.String(0x05), system?.String(0x19), system?.String(0x06),
@@ -123,6 +123,28 @@ public static class Smbios
     ];
 
     public const string Redacted = "redacted";
+
+    /// The values Redact takes out, as strings, so they can be taken out of
+    /// everything else that mentions them (registry values, device names).
+    public static List<string> PersonalValues(IReadOnlyList<SmbiosStructure> structures)
+    {
+        var values = new List<string>();
+        foreach (var s in structures)
+        {
+            foreach (var (type, offset, _) in PersonalStrings)
+                if (type == s.Type && s.String(offset) is { } v) values.Add(v);
+            if (s.Type == 1 && s.Formatted.Length >= 0x18)
+            {
+                var uuid = new Guid(s.Formatted.AsSpan(0x08, 16));
+                if (uuid != Guid.Empty && uuid != new Guid("ffffffff-ffff-ffff-ffff-ffffffffffff"))
+                {
+                    values.Add(uuid.ToString());
+                    values.Add(Convert.ToHexString(s.Formatted, 0x08, 16)); // as raw bytes, in registry blobs
+                }
+            }
+        }
+        return values.Distinct().ToList();
+    }
 
     /// A copy with serial numbers, asset tags and the system UUID replaced.
     /// Returns what was redacted, for the report's own record.

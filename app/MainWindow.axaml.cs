@@ -16,6 +16,11 @@ public partial class MainWindow : Window
         DataContext = this.model = model;
         Opened += async (_, _) =>
         {
+            // As tall as the screen comfortably allows, so a step's results show
+            // without scrolling where they can; the page scrolls where they can't.
+            if (Screens.ScreenFromWindow(this) is { } screen)
+                Height = Math.Clamp(screen.WorkingArea.Height / RenderScaling - 80, MinHeight, 760);
+
             // Demo only: start on a later step, for screenshots of each one.
             // OMARCHY_DEMO_MODE is install or report; STEP counts within it.
             var mode = model.IsDemo ? Environment.GetEnvironmentVariable("OMARCHY_DEMO_MODE") : null;
@@ -47,7 +52,11 @@ public partial class MainWindow : Window
     async void StartInstall(object? sender, RoutedEventArgs e) => await model.StartAsync(report: false);
     async void StartReport(object? sender, RoutedEventArgs e) => await model.StartAsync(report: true);
     async void SwitchToReport(object? sender, RoutedEventArgs e) => await model.SwitchToReportAsync();
-    async void Collect(object? sender, RoutedEventArgs e) => await model.CollectAsync();
+    async void Collect(object? sender, RoutedEventArgs e)
+    {
+        await model.CollectAsync();
+        Page.ScrollToEnd(); // the result sits below the progress lines
+    }
     async void OpenReportForm(object? sender, RoutedEventArgs e) => await Launcher.LaunchUriAsync(new Uri(model.ReportIssueUrl));
 
     async void ShowReport(object? sender, RoutedEventArgs e)
