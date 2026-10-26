@@ -62,6 +62,46 @@ public sealed class WindowsHardware : IHardwareSource
         status.Report("Reading the displays' EDID");
         var displays = ReadDisplays(devices, problems);
 
+        ct.ThrowIfCancellationRequested();
+        status.Report("Reading each device's settings and its driver's");
+        devices = devices.Select(d => d with
+        {
+            EnumKey = WindowsRegistry.Dump($@"SYSTEM\CurrentControlSet\Enum\{d.InstanceId}", PropertyStore),
+            DriverKey = d.Driver is null ? null : WindowsRegistry.Dump($@"SYSTEM\CurrentControlSet\Control\Class\{d.Driver}", PropertyStore),
+        }).ToList();
+        var services = new Dictionary<string, RegistryDump>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in devices.Select(d => d.Service).Where(n => !string.IsNullOrWhiteSpace(n)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (WindowsRegistry.Dump($@"SYSTEM\CurrentControlSet\Services\{name}", ServicePrivate) is { } dump) services[name!] = dump;
+        }
+        Log.Info($"Registry: {devices.Count(d => d.EnumKey is not null)} device keys, {devices.Count(d => d.DriverKey is not null)} driver keys, {services.Count} services");
+
+        ct.ThrowIfCancellationRequested();
+        status.Report("Reading the registry's hardware description");
+        var registry = new Dictionary<string, RegistryDump>();
+        foreach (var path in SystemKeys)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (WindowsRegistry.Dump(path) is { } dump) registry[path] = dump;
+            else Log.Info($@"Registry: HKLM\{path} not read");
+        }
+
+        ct.ThrowIfCancellationRequested();
+        status.Report("Asking Windows about storage, power, displays and drivers");
+        string? windows = null;
+        try
+        {
+            windows = WindowsPlatform.PowerShell(WindowsFacts, "Windows' view of the hardware");
+            using var _ = JsonDocument.Parse(windows);
+        }
+        catch (Exception e)
+        {
+            Log.Error("asking Windows about the hardware", e);
+            problems.Add($"Windows' view of storage, power and drivers: {e.Message}");
+            windows = null;
+        }
+
         return new CollectedHardware
         {
             Smbios = smbios,
@@ -69,10 +109,68 @@ public sealed class WindowsHardware : IHardwareSource
             Acpi = acpi,
             Displays = displays,
             Devices = devices,
+            Services = services,
+            Registry = registry,
+            WindowsJson = windows,
+            Secrets = new[] { Environment.MachineName, Environment.UserName, Environment.UserDomainName }
+                .Where(n => n.Length >= 3).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
             Os = OsDescription(),
             Problems = problems,
         };
     }, ct);
+
+    /// The property store under a device or driver key repeats what the
+    /// configuration manager already gave, as binary.
+    static readonly HashSet<string> PropertyStore = new(StringComparer.OrdinalIgnoreCase) { "Properties" };
+    /// A service's security descriptor and its device list say nothing about the hardware.
+    static readonly HashSet<string> ServicePrivate = new(StringComparer.OrdinalIgnoreCase) { "Security", "Enum" };
+
+    /// System-wide keys that describe the hardware: the processors, firmware
+    /// and the resources drivers got; where ports and such map to devices;
+    /// what Windows computed as the machine's CHIDs; Secure Boot's state.
+    static readonly string[] SystemKeys =
+    [
+        @"HARDWARE\DESCRIPTION\System",
+        @"HARDWARE\DEVICEMAP",
+        @"HARDWARE\RESOURCEMAP",
+        @"SYSTEM\CurrentControlSet\Control\SystemInformation",
+        @"SYSTEM\CurrentControlSet\Control\SecureBoot\State",
+    ];
+
+    /// What Windows' own tools know that the firmware tables and the device
+    /// list do not say: the storage bus, the battery, the power states the
+    /// firmware offers, the GPU and displays as Windows drives them, and the
+    /// driver packages in the store. Each part fails on its own.
+    const string WindowsFacts = """
+        function Try($block) { try { @(& $block) } catch { @{ error = $_.Exception.Message } } }
+        function Day($d) { if ($d) { ([DateTime]$d).ToString('yyyy-MM-dd') } }
+        $r = [ordered]@{}
+        $r.computerSystem = Try { Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model, SystemFamily, SystemSKUNumber, SystemType, PCSystemType, PCSystemTypeEx, TotalPhysicalMemory, NumberOfProcessors, NumberOfLogicalProcessors, HypervisorPresent, PowerSupplyState, ThermalState }
+        $r.bios = Try { Get-CimInstance Win32_BIOS | Select-Object Manufacturer, Name, Version, SMBIOSBIOSVersion, SMBIOSMajorVersion, SMBIOSMinorVersion, @{n='ReleaseDate';e={Day $_.ReleaseDate}}, BIOSVersion, EmbeddedControllerMajorVersion, EmbeddedControllerMinorVersion, SystemBiosMajorVersion, SystemBiosMinorVersion }
+        $r.processors = Try { Get-CimInstance Win32_Processor | Select-Object DeviceID, Name, Manufacturer, Description, Caption, Architecture, Family, Level, Revision, Stepping, ProcessorType, NumberOfCores, NumberOfEnabledCore, NumberOfLogicalProcessors, ThreadCount, MaxClockSpeed, CurrentClockSpeed, ExtClock, L2CacheSize, L3CacheSize, DataWidth, AddressWidth, Characteristics, VirtualizationFirmwareEnabled, SecondLevelAddressTranslationExtensions }
+        $r.firmwareType = Try { (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name PEFirmwareType).PEFirmwareType }
+        $r.secureBoot = Try { Confirm-SecureBootUEFI }
+        $r.physicalDisks = Try { Get-PhysicalDisk | Select-Object DeviceId, FriendlyName, Manufacturer, Model, BusType, MediaType, Size, AllocatedSize, FirmwareVersion, PhysicalSectorSize, LogicalSectorSize, SpindleSpeed, HealthStatus, OperationalStatus, Usage }
+        $r.disks = Try { Get-Disk | Select-Object Number, FriendlyName, Manufacturer, Model, BusType, PartitionStyle, Size, AllocatedSize, LogicalSectorSize, PhysicalSectorSize, NumberOfPartitions, IsBoot, IsSystem, BootFromDisk, FirmwareVersion, HealthStatus, OperationalStatus }
+        $r.battery = Try { Get-CimInstance Win32_Battery | Select-Object Name, Description, Chemistry, DesignVoltage, DesignCapacity, FullChargeCapacity, BatteryStatus, EstimatedChargeRemaining, Availability, PowerManagementSupported }
+        $r.batteryStatic = Try { Get-CimInstance -Namespace root/wmi -ClassName BatteryStaticData | Select-Object DeviceName, ManufactureName, ManufactureDate, Chemistry, DesignedCapacity, DefaultAlert1, DefaultAlert2, CriticalBias, Capabilities, Granularity1, Granularity2 }
+        $r.batteryFullChargedCapacity = Try { Get-CimInstance -Namespace root/wmi -ClassName BatteryFullChargedCapacity | Select-Object FullChargedCapacity }
+        $r.batteryCycleCount = Try { Get-CimInstance -Namespace root/wmi -ClassName BatteryCycleCount | Select-Object CycleCount }
+        $r.video = Try { Get-CimInstance Win32_VideoController | Select-Object Name, VideoProcessor, AdapterCompatibility, AdapterRAM, AdapterDACType, DriverVersion, @{n='DriverDate';e={Day $_.DriverDate}}, VideoModeDescription, CurrentHorizontalResolution, CurrentVerticalResolution, CurrentRefreshRate, MinRefreshRate, MaxRefreshRate, CurrentBitsPerPixel, VideoArchitecture, VideoMemoryType, PNPDeviceID, Status }
+        $r.monitorConnections = Try { Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorConnectionParams | Select-Object InstanceName, VideoOutputTechnology, Active }
+        $r.monitorParams = Try { Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBasicDisplayParams | Select-Object InstanceName, MaxHorizontalImageSize, MaxVerticalImageSize, VideoInputType, Active }
+        $r.monitorModes = Try { Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorListedSupportedSourceModes | ForEach-Object { [pscustomobject]@{ InstanceName = $_.InstanceName; PreferredSourceModeIndex = $_.PreferredSourceModeIndex; Modes = @($_.MonitorSourceModes | ForEach-Object { [pscustomobject]@{ HorizontalActivePixels = $_.HorizontalActivePixels; VerticalActivePixels = $_.VerticalActivePixels; VerticalRefreshRateNumerator = $_.VerticalRefreshRateNumerator; VerticalRefreshRateDenominator = $_.VerticalRefreshRateDenominator; HorizontalRefreshRateNumerator = $_.HorizontalRefreshRateNumerator; HorizontalRefreshRateDenominator = $_.HorizontalRefreshRateDenominator; PixelClockRate = $_.PixelClockRate; VideoStandardType = $_.VideoStandardType; Origin = $_.Origin } }) } } }
+        $r.sound = Try { Get-CimInstance Win32_SoundDevice | Select-Object Name, Manufacturer, ProductName, PNPDeviceID, Status, StatusInfo }
+        $r.usbControllers = Try { Get-CimInstance Win32_USBController | Select-Object Name, Manufacturer, PNPDeviceID, ProtocolSupported, Status }
+        $r.networkAdapters = Try { Get-NetAdapter | Select-Object Name, InterfaceDescription, PnPDeviceID, DriverDescription, DriverVersionString, DriverProvider, DriverFileName, @{n='DriverDate';e={Day $_.DriverDate}}, LinkSpeed, MediaType, PhysicalMediaType, MediaConnectionState, Status, Virtual, Hidden, NdisVersion }
+        $r.thermalZones = Try { Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object InstanceName, Active, CurrentTemperature, CriticalTripPoint, PassiveTripPoint, ActiveTripPoint, ActiveTripPointCount, SamplingPeriod, ThermalConstant1, ThermalConstant2, Reserved }
+        $r.powerCapabilities = Try { @(& powercfg.exe /a 2>&1 | ForEach-Object { "$_".TrimEnd() }) }
+        $r.powerSchemes = Try { @(& powercfg.exe /list 2>&1 | ForEach-Object { "$_".TrimEnd() }) }
+        $r.tpm = Try { Get-Tpm | Select-Object TpmPresent, TpmReady, TpmEnabled, TpmActivated, ManufacturerId, ManufacturerIdTxt, ManufacturerVersion, ManufacturerVersionFull20, ManagedAuthLevel }
+        $r.os = Try { Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' | Select-Object ProductName, EditionID, InstallationType, DisplayVersion, ReleaseId, CurrentBuild, UBR, BuildLabEx, CurrentMajorVersionNumber, CurrentMinorVersionNumber, BuildBranch }
+        $r.driverStore = Try { Get-WindowsDriver -Online | Select-Object Driver, OriginalFileName, ProviderName, ClassName, ClassGuid, ClassDescription, Version, @{n='Date';e={Day $_.Date}}, BootCritical, Inbox, DriverSignature }
+        ConvertTo-Json -InputObject $r -Depth 6 -Compress
+        """;
 
     static List<AcpiTable> ReadAcpi(List<string> problems)
     {
@@ -255,6 +353,8 @@ static class DeviceList
     {
         readonly Guid fmtid = fmtid;
         readonly uint pid = pid;
+        public Guid Fmtid => fmtid;
+        public uint Pid => pid;
     }
 
     static readonly Guid DeviceGuid = new("a45c254e-df1c-4efd-8020-67d146a850e0");
@@ -266,6 +366,9 @@ static class DeviceList
     static readonly DevPropKey CompatibleIds = new(DeviceGuid, 4);
     static readonly DevPropKey Service = new(DeviceGuid, 6);
     static readonly DevPropKey Class = new(DeviceGuid, 9);
+    static readonly DevPropKey Driver = new(DeviceGuid, 11);
+    static readonly DevPropKey Security = new(DeviceGuid, 25);
+    static readonly DevPropKey SecuritySds = new(DeviceGuid, 26);
     static readonly DevPropKey Manufacturer = new(DeviceGuid, 13);
     static readonly DevPropKey LocationPaths = new(DeviceGuid, 37);
     static readonly DevPropKey BiosDeviceName = new(new Guid("540b947e-8b40-45bc-a8a2-6a0b894cbda2"), 10);
@@ -292,6 +395,9 @@ static class DeviceList
 
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
     static extern uint CM_Get_DevNode_PropertyW(uint devInst, in DevPropKey key, out uint type, byte[]? buffer, ref uint size, uint flags);
+
+    [DllImport("cfgmgr32.dll")]
+    static extern uint CM_Get_DevNode_Property_Keys(uint devInst, [Out] DevPropKey[]? keys, ref uint count, uint flags);
 
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern bool SetupGetInfDriverStoreLocationW(string fileName, IntPtr platform, string? locale, char[]? buffer, uint size,
@@ -335,9 +441,32 @@ static class DeviceList
                 DriverVersion = Get(dev, DriverVersion) as string,
                 DriverDate = Get(dev, DriverDate) as string,
                 DriverFolder = inf is null ? null : folders.TryGetValue(inf, out var f) ? f : folders[inf] = StoreFolder(inf),
+                Driver = Get(dev, Driver) as string,
+                Properties = AllProperties(dev),
             });
         }
         return result;
+    }
+
+    /// Every property the device has, decoded; security descriptors left out.
+    static List<DeviceProperty> AllProperties(uint dev)
+    {
+        var result = new List<DeviceProperty>();
+        uint count = 0;
+        if (CM_Get_DevNode_Property_Keys(dev, null, ref count, 0) != CR_BUFFER_SMALL || count == 0) return result;
+        var keys = new DevPropKey[count];
+        if (CM_Get_DevNode_Property_Keys(dev, keys, ref count, 0) != CR_SUCCESS) return result;
+        foreach (var key in keys.Take((int)count))
+        {
+            if (key.Equals(Security) || key.Equals(SecuritySds)) continue;
+            uint size = 0;
+            if (CM_Get_DevNode_PropertyW(dev, key, out _, null, ref size, 0) != CR_BUFFER_SMALL) continue;
+            var data = new byte[size];
+            if (CM_Get_DevNode_PropertyW(dev, key, out var type, data, ref size, 0) != CR_SUCCESS) continue;
+            var (typeName, value) = DevProp.Decode(type, data, (int)size);
+            result.Add(new DeviceProperty(DevProp.KeyName(key.Fmtid, key.Pid), typeName, value));
+        }
+        return result.OrderBy(p => p.Key, StringComparer.Ordinal).ToList();
     }
 
     static object? Get(uint dev, DevPropKey key)

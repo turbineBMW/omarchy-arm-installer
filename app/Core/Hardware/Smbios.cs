@@ -124,6 +124,28 @@ public static class Smbios
 
     public const string Redacted = "redacted";
 
+    /// The values Redact takes out, as strings, so they can be taken out of
+    /// everything else that mentions them (registry values, device names).
+    public static List<string> PersonalValues(IReadOnlyList<SmbiosStructure> structures)
+    {
+        var values = new List<string>();
+        foreach (var s in structures)
+        {
+            foreach (var (type, offset, _) in PersonalStrings)
+                if (type == s.Type && s.String(offset) is { } v) values.Add(v);
+            if (s.Type == 1 && s.Formatted.Length >= 0x18)
+            {
+                var uuid = new Guid(s.Formatted.AsSpan(0x08, 16));
+                if (uuid != Guid.Empty && uuid != new Guid("ffffffff-ffff-ffff-ffff-ffffffffffff"))
+                {
+                    values.Add(uuid.ToString());
+                    values.Add(Convert.ToHexString(s.Formatted, 0x08, 16)); // as raw bytes, in registry blobs
+                }
+            }
+        }
+        return values.Distinct().ToList();
+    }
+
     /// A copy with serial numbers, asset tags and the system UUID replaced.
     /// Returns what was redacted, for the report's own record.
     public static (List<SmbiosStructure> Table, List<string> Redactions) Redact(IReadOnlyList<SmbiosStructure> structures)

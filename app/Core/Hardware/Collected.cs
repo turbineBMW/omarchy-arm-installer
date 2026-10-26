@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace OmarchyArmInstaller.Core.Hardware;
 
 /// One ACPI table as the firmware handed it to the OS.
@@ -28,6 +30,17 @@ public sealed record DeviceInfo
     public string? DriverDate { get; init; }
     /// The driver package's folder in the driver store, when it has one.
     public string? DriverFolder { get; init; }
+    /// The driver's key under Control\Class ({class guid}\0000), where the
+    /// driver keeps its settings.
+    public string? Driver { get; init; }
+    /// Every property the configuration manager has for the device.
+    public IReadOnlyList<DeviceProperty> Properties { get; init; } = [];
+    /// The device's own key under Enum, with Device Parameters and LogConf.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RegistryDump? EnumKey { get; init; }
+    /// The driver's settings key under Control\Class.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RegistryDump? DriverKey { get; init; }
 }
 
 /// Everything read from the machine, before redaction.
@@ -39,6 +52,18 @@ public sealed record CollectedHardware
     public IReadOnlyList<AcpiTable> Acpi { get; init; } = [];
     public IReadOnlyList<DisplayEdid> Displays { get; init; } = [];
     public IReadOnlyList<DeviceInfo> Devices { get; init; } = [];
+    /// The service (driver) keys of the present devices, by service name,
+    /// where drivers keep machine-wide parameters.
+    public IReadOnlyDictionary<string, RegistryDump> Services { get; init; } = new Dictionary<string, RegistryDump>();
+    /// System-wide keys that describe the hardware, by their path under HKLM:
+    /// HARDWARE\DESCRIPTION\System, DEVICEMAP, RESOURCEMAP, SystemInformation.
+    public IReadOnlyDictionary<string, RegistryDump> Registry { get; init; } = new Dictionary<string, RegistryDump>();
+    /// What Windows itself says about storage, battery, power, displays, the
+    /// GPU and the driver store: one JSON document, gathered by PowerShell.
+    public string? WindowsJson { get; init; }
+    /// Names that identify this install rather than the model (the computer
+    /// and user names), to take out of everything else.
+    public IReadOnlyList<string> Secrets { get; init; } = [];
     public string Os { get; init; } = "";
     /// What could not be read, for the report and the person sending it.
     public IReadOnlyList<string> Problems { get; init; } = [];
