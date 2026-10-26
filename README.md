@@ -52,4 +52,4 @@ sudo bin/make-usb ISO /dev/sdX --firmware .../FileRepository --recipe ID   # a s
 bin/check-recipes
 ```
 
-Off Windows the app runs as a demo that writes nothing; `OMARCHY_DEMO_DMI`, `OMARCHY_DEMO_DRIVER_STORE`, `OMARCHY_DEMO_RECIPE_SERVER`, `OMARCHY_DEMO_MODE` (install or report) and `OMARCHY_DEMO_STEP` feed it. Logs go to `%LOCALAPPDATA%\OmarchyArmInstaller\Logs`.
+Off Windows the app runs as a demo that writes nothing; `OMARCHY_DEMO_DMI`, `OMARCHY_DEMO_DRIVER_STORE`, `OMARCHY_DEMO_RECIPE_SERVER`, `OMARCHY_DEMO_MODE` (install or report), `OMARCHY_DEMO_STEP` (0 in the report collects it and stays) and `OMARCHY_DEMO_SCROLL=end` feed it. Logs go to `%LOCALAPPDATA%\OmarchyArmInstaller\Logs`.

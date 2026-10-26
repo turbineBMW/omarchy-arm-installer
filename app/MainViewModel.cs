@@ -186,6 +186,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string MachineName { get; private set; } = "";
     public string MachineNote { get; private set; } = "";
     public bool HasMachineNote => MachineNote.Length > 0;
+    /// A recipe matched this model: said on its own line, with its icon.
+    public bool HasRecipeNote { get; private set; }
+    public string RecipeNoteDetail => Recipe is { IsTested: false } ? "It has not been tested on this model yet." : "";
+    public bool HasRecipeNoteDetail => RecipeNoteDetail.Length > 0;
 
     MachineInfo? machine;
     CollectedHardware? hardware;
@@ -217,6 +221,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         MachineChecks.Clear();
         MachineNote = "";
+        HasRecipeNote = false;
         MachineUnsupported = false;
         await RunAsync(async ct =>
         {
@@ -235,10 +240,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             MachineNote = !supported
                 ? "Omarchy cannot start on this model yet: Linux needs a device tree for it, written by hand. " +
                   "Share a hardware report, and the people who write them have what they need."
-                : Recipe is { } r
-                    ? $"{r.Name} are available for this model, from {r.Maintainer.Name}." +
-                      (r.IsTested ? "" : " They have not been tested on it yet.")
+                : Recipe is not null ? ""
                     : "Omarchy installs as it comes, with this computer's firmware. Not every part may work yet.";
+            HasRecipeNote = supported && Recipe is not null;
             flow = Recipe is null ? InstallFlow : RecipeFlow;
             UseRecipe = Recipe is not null;
         });
@@ -291,12 +295,57 @@ public sealed class MainViewModel : INotifyPropertyChanged
     bool imageFromRelease;
     public string OfficialProblem { get; private set; } = "";
     public bool HasOfficialProblem => OfficialProblem.Length > 0;
+    public bool ShowOfficialProblem => HasOfficialProblem && UseRecipe;
+    public bool OfficialLoading { get; private set; }
     public bool HasOfficial => official is not null && UseRecipe;
     public string OfficialText => official is null ? "" : official.Count == 0
         ? "The installer image has everything the extras depend on."
         : $"The extras also need {official.Count} of Omarchy's and Arch Linux ARM's own packages that the installer image does not carry " +
           $"({official.Sum(p => p.Package.Size) / 1e6:0.0} MB): {string.Join(", ", official.Select(p => p.Package.Name))}. " +
           "They go on the stick too, with their own signatures, which Omarchy checks with its keyring.";
+
+    /// The Extras page's first list: Omarchy's and Arch Linux ARM's own
+    /// packages the recipe adds because the installer image lacks them.
+    public IReadOnlyList<OfficialItem> OfficialItems => official?
+        .OrderBy(p => p.Package.Name, StringComparer.Ordinal)
+        .Select(p => new OfficialItem(p.Package.Name, $"{p.Repo.Name}  ·  {p.Package.Version}  ·  {Size(p.Package.Size)}"))
+        .ToList() ?? [];
+    public bool HasOfficialItems => official is { Count: > 0 };
+    public string OfficialStatus =>
+        OfficialLoading ? "Working out which of Omarchy's packages the recipe needs…"
+        : HasOfficialProblem ? ""
+        : official is null ? "Listed once the installer image is known, at the Installer step."
+        : official.Count == 0 ? "None: the installer image already has everything the recipe needs from Omarchy."
+        : $"Packages Omarchy already publishes, which the installer image does not carry. They come from Omarchy's and Arch Linux ARM's " +
+          $"own repositories with their own signatures, and Omarchy checks them with its keyring ({official.Count} packages, {Size(official.Sum(p => p.Package.Size))}).";
+    public bool HasOfficialStatus => OfficialStatus.Length > 0;
+
+    /// The Extras page's second list: what comes from outside Omarchy, by
+    /// the repository it comes from, each with a link to it.
+    public IReadOnlyList<OutsideRepo> OutsideRepos => Recipe is null || RecipeInfo is not { } info ? [] :
+    [
+        new OutsideRepo(
+            Recipe.Repo.Name,
+            info.Summary,
+            $"Maintained by {(info.Maintainer ?? Recipe.Maintainer).Name}  ·  signed with key " +
+                string.Join(" ", Recipe.Repo.KeyFingerprint.Chunk(4).Select(c => new string(c))),
+            Link(info.Homepage) ?? Link(Recipe.Repo.ServerFor(PacmanRepo.Arch)),
+            info.Packages.Select(p => new OutsidePackage(p.Name, p.Replaces, p.Description, Link(p.Upstream))).ToList(),
+            RecipePackages is { } packages ? $"{packages.Count} packages, {Size(packages.Sum(p => p.Size))}" : ""),
+    ];
+    public string OutsideNote
+    {
+        get
+        {
+            var replaced = RecipeInfoPackages.Where(p => p.Replaces).Select(p => p.Name).ToList();
+            return (replaced.Count > 0 ? $"They replace Omarchy's own {string.Join(", ", replaced)}. " : "") +
+                   "They keep updating from their repository until you remove them with omarchy-recipe remove in a terminal; " +
+                   "when the maintainer retires it, once Omarchy has the same, Omarchy's updates say so.";
+        }
+    }
+
+    static Uri? Link(string? url) => Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps ? uri : null;
+    static string Size(long bytes) => bytes >= 1_000_000 ? $"{bytes / 1e6:0.0} MB" : $"{Math.Max(1, bytes / 1000)} kB";
 
     public string RecipeTitle => RecipeInfo?.Name ?? Recipe?.Name ?? "";
     public string RecipeSummary => RecipeInfo?.Summary ?? "";
@@ -306,31 +355,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         ? $"Its maintainer has retired this repository: {info.RetiredMessage ?? "Omarchy has everything it carried."} Install Omarchy as it comes."
         : "";
 
-    /// What the person is shown before choosing: these are not Omarchy's.
-    public string RecipeWarning
-    {
-        get
-        {
-            if (Recipe is null) return "";
-            var replaced = RecipeInfoPackages.Where(p => p.Replaces).Select(p => p.Name).ToList();
-            return $"Not part of Omarchy. These packages come from {Recipe.Maintainer.Name}, not from the Omarchy team, " +
-                   "who have not reviewed them. " +
-                   (replaced.Count > 0 ? $"They replace Omarchy's own {string.Join(", ", replaced)}. " : "") +
-                   $"They keep updating from {Recipe.Maintainer.Name}'s repository until you remove it with omarchy-recipe remove " +
-                   "in a terminal; when the maintainer retires it, once Omarchy has the same, Omarchy's updates say so.";
-        }
-    }
-
-    public string RecipeSource => Recipe is null ? "" :
-        $"Maintainer  {Recipe.Maintainer.Name}{(Recipe.Maintainer.Github is { } gh ? $" (github.com/{gh})" : "")}\n" +
-        (RecipeInfo?.Homepage is { } home ? $"Homepage    {home}\n" : "") +
-        $"Repository  {Recipe.Repo.ServerFor(PacmanRepo.Arch)}\n" +
-        $"Key         {string.Join(" ", Recipe.Repo.KeyFingerprint.Chunk(4).Select(c => new string(c)))}";
-    public string RecipeTrust => verified is null ? "" :
-        "\uf00c  Signed by this key, which the installer's recipe for this model names. The packages are checked again when Omarchy installs them.";
-    public string RecipeDownload => RecipePackages is null ? "" :
-        $"{RecipePackages.Count} packages, {RecipePackages.Sum(p => p.Size) / 1e6:0} MB, go on the stick, " +
-        "plus whatever they depend on that the installer image does not carry (listed at the Installer step).";
+    public string RecipeDownload => !UseRecipe || RecipePackages is null ? "" :
+        $"On the stick: {RecipePackages.Count} packages from outside Omarchy ({Size(RecipePackages.Sum(p => p.Size))})" +
+        (official is { Count: > 0 } ? $" and {official.Count} of Omarchy's ({Size(official.Sum(p => p.Package.Size))})" : "") + ".";
     public bool StickTooSmall => FirmwareSize + RecipeSize > StickRoom;
 
     public async Task LoadRecipeAsync()
@@ -428,7 +455,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         official = null;
         OfficialProblem = "";
-        if (Recipe is null || verified is null || !UseRecipe || release is null) { ChangedAll(); return; }
+        if (Recipe is null || verified is null || release is null) { ChangedAll(); return; }
         if (release.OfflineDbUrl is null)
         {
             OfficialProblem = "This installer release does not say which packages it carries, so the extras cannot be completed " +
@@ -436,6 +463,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ChangedAll();
             return;
         }
+        OfficialLoading = true;
+        ChangedAll();
         try
         {
             var ct = CancellationToken.None;
@@ -452,7 +481,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
             OfficialProblem = e is InvalidDataException ? e.Message
                 : $"Could not read the package repositories ({e.Message}). Leave the extras out, or go Back and try again.";
         }
+        OfficialLoading = false;
         ChangedAll();
+    }
+
+    /// At the Extras step: the published installer, looked up quietly (the
+    /// Installer step says so if there is none), and the official packages
+    /// the recipe needs beyond it, so the page can list them.
+    async Task PrepareOfficialAsync()
+    {
+        if (verified is null) return;
+        if (release is null && !releaseChecked)
+        {
+            try { release = await ImageSource.FindLatestAsync(CancellationToken.None); }
+            catch (Exception e) { Log.Info($"Release lookup at the Extras step: {e.Message}"); }
+        }
+        if (release is not null && official is null && !HasOfficialProblem && !OfficialLoading) await ResolveOfficialAsync();
     }
 
     // ---------- USB stick ----------
@@ -859,13 +903,29 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             case Steps.Machine: await CheckMachineAsync(); break;
             case Steps.Firmware: FindFirmware(); break;
-            case Steps.Extras: await LoadRecipeAsync(); break;
+            case Steps.Extras: await LoadRecipeAsync(); await PrepareOfficialAsync(); break;
             case Steps.Installer:
                 if (release is null) await FindReleaseAsync();
-                else if (UseRecipe && official is null && !HasOfficialProblem) await ResolveOfficialAsync();
+                else if (UseRecipe && official is null && !HasOfficialProblem && !OfficialLoading) await ResolveOfficialAsync();
                 break;
             case Steps.Stick: await ListDisksAsync(); break;
             case Steps.Windows: await CheckWindowsAsync(); break;
         }
     }
+}
+
+/// One of Omarchy's or Arch Linux ARM's packages a recipe adds.
+public sealed record OfficialItem(string Name, string Detail);
+
+/// A package from outside Omarchy, with where its fix is headed.
+public sealed record OutsidePackage(string Name, bool Replaces, string Description, Uri? Upstream)
+{
+    public bool HasUpstream => Upstream is not null;
+}
+
+/// A repository outside Omarchy that a recipe takes packages from.
+public sealed record OutsideRepo(string Name, string Summary, string Source, Uri? Link, IReadOnlyList<OutsidePackage> Packages, string Size)
+{
+    public bool HasLink => Link is not null;
+    public bool HasSummary => Summary.Length > 0;
 }
