@@ -31,6 +31,13 @@ public partial class MainWindow : Window
                 return;
             }
             await model.StartAsync(mode == "report");
+            // STEP=0 in the report: collect it and stay, as pressing the button does.
+            if (model.IsReport && Environment.GetEnvironmentVariable("OMARCHY_DEMO_STEP") == "0")
+            {
+                await model.CollectAsync();
+                ScrollToEndAfterLayout();
+                return;
+            }
             if (int.TryParse(Environment.GetEnvironmentVariable("OMARCHY_DEMO_STEP"), out var step) && step > 0)
             {
                 if (Environment.GetEnvironmentVariable("OMARCHY_DEMO_IMAGE") is { } image) model.UseLocalImage(image);
@@ -41,6 +48,8 @@ public partial class MainWindow : Window
                 model.Step = step;
                 model.Error = null;
                 await model.EnterAsync();
+                // SCROLL=end: the step's end, for a screenshot of what runs past the window.
+                if (Environment.GetEnvironmentVariable("OMARCHY_DEMO_SCROLL") == "end") ScrollToEndAfterLayout();
             }
             if (model.IsCreateStep && Environment.GetEnvironmentVariable("OMARCHY_DEMO_CREATE") == "1")
                 await model.CreateAsync();
@@ -55,7 +64,22 @@ public partial class MainWindow : Window
     async void Collect(object? sender, RoutedEventArgs e)
     {
         await model.CollectAsync();
-        Page.ScrollToEnd(); // the result sits below the progress lines
+        ScrollToEndAfterLayout(); // the result sits below the progress lines
+    }
+
+    /// Scrolls the page to its end once the content just added is laid out.
+    /// Straight away, the page's extent does not include it yet, and wrapped
+    /// text can take another layout pass: so follow the extent as it grows,
+    /// for a moment.
+    void ScrollToEndAfterLayout()
+    {
+        void Grew(object? sender, ScrollChangedEventArgs e)
+        {
+            if (e.ExtentDelta.Y > 0) Page.ScrollToEnd();
+        }
+        Page.ScrollChanged += Grew;
+        Avalonia.Threading.Dispatcher.UIThread.Post(() => Page.ScrollToEnd(), Avalonia.Threading.DispatcherPriority.Background);
+        Avalonia.Threading.DispatcherTimer.RunOnce(() => Page.ScrollChanged -= Grew, TimeSpan.FromSeconds(1));
     }
     async void OpenReportForm(object? sender, RoutedEventArgs e) => await Launcher.LaunchUriAsync(new Uri(model.ReportIssueUrl));
 
