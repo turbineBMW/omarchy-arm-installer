@@ -98,9 +98,9 @@ public static class Smbios
         var board = structures.FirstOrDefault(s => s.Type == 2);
         var chassis = structures.FirstOrDefault(s => s.Type == 3);
 
-        // 0xFF in both release bytes means the BIOS does not report them.
+        // 0xFF in both release bytes means the BIOS does not report them, but
+        // Windows hashes them as "ff" all the same, so its CHIDs 0-2 match.
         byte? major = bios?.Byte(0x14), minor = bios?.Byte(0x15);
-        if (major == 0xFF && minor == 0xFF) major = minor = null;
 
         return new SmbiosIdentity(
             system?.String(0x04), system?.String(0x1A), system?.String(0x05), system?.String(0x19), system?.String(0x06),

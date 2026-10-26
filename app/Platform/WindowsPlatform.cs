@@ -281,10 +281,21 @@ public sealed class WindowsPlatform : IPlatform
         if (process.ExitCode != 0)
         {
             var message = error.Result.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("ERROR: "))?[7..]
-                ?? FirstLine(error.Result) ?? FirstLine(output.Result) ?? $"PowerShell exited with {process.ExitCode}";
+                ?? ClixmlError(error.Result) ?? FirstLine(error.Result) ?? FirstLine(output.Result) ?? $"PowerShell exited with {process.ExitCode}";
             throw new InvalidOperationException($"{what} failed: {message}");
         }
         return output.Result;
+    }
+
+    /// A parse error never reaches the script's own catch: PowerShell writes
+    /// it to stderr as CLIXML. The first lines of its error strings.
+    static string? ClixmlError(string text)
+    {
+        if (!text.TrimStart().StartsWith("#< CLIXML")) return null;
+        var lines = System.Text.RegularExpressions.Regex.Matches(text, "<S S=\"Error\">(.*?)</S>")
+            .Select(m => System.Net.WebUtility.HtmlDecode(m.Groups[1].Value).Replace("_x000D_", "").Replace("_x000A_", "").Trim())
+            .Where(l => l.Length > 0).Take(4).ToList();
+        return lines.Count == 0 ? null : string.Join(" ", lines);
     }
 
     static string? FirstLine(string text) =>
