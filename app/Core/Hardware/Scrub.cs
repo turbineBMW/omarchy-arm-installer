@@ -48,6 +48,7 @@ public sealed class Scrubber
     /// A string with every secret replaced.
     public string Text(string value)
     {
+        value = value.TrimEnd('\0'); // fixed-size firmware strings, padded
         if (value.Length == 0) return value;
         value = UsbSerial.Replace(value, m => m.Groups[1].Value + Placeholder_(m.Groups[3].Value, ref macCounted, "USB serial numbers and MAC addresses in device IDs"));
         value = Mac.Replace(value, x => Placeholder_(x.Value, ref macCounted, "USB serial numbers and MAC addresses in device IDs"));

@@ -140,19 +140,20 @@ public sealed class WindowsHardware : IHardwareSource
     /// What Windows' own tools know that the firmware tables and the device
     /// list do not say: the storage bus, the battery, the power states the
     /// firmware offers, the GPU and displays as Windows drives them, and the
-    /// driver packages in the store. Each part fails on its own.
+    /// driver packages in the store. Each part fails on its own, and each is
+    /// a list even when it has one item.
     const string WindowsFacts = """
-        function Part($block) { try { @(& $block) } catch { @{ error = $_.Exception.Message } } }
+        function Part($block) { try { ,@(& $block) } catch { ,@(@{ error = $_.Exception.Message }) } }
         function Day($d) { if ($d) { ([DateTime]$d).ToString('yyyy-MM-dd') } }
         $r = [ordered]@{}
         $r.computerSystem = Part { Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model, SystemFamily, SystemSKUNumber, SystemType, PCSystemType, PCSystemTypeEx, TotalPhysicalMemory, NumberOfProcessors, NumberOfLogicalProcessors, HypervisorPresent, PowerSupplyState, ThermalState }
         $r.bios = Part { Get-CimInstance Win32_BIOS | Select-Object Manufacturer, Name, Version, SMBIOSBIOSVersion, SMBIOSMajorVersion, SMBIOSMinorVersion, @{n='ReleaseDate';e={Day $_.ReleaseDate}}, BIOSVersion, EmbeddedControllerMajorVersion, EmbeddedControllerMinorVersion, SystemBiosMajorVersion, SystemBiosMinorVersion }
         $r.processors = Part { Get-CimInstance Win32_Processor | Select-Object DeviceID, Name, Manufacturer, Description, Caption, Architecture, Family, Level, Revision, Stepping, ProcessorType, NumberOfCores, NumberOfEnabledCore, NumberOfLogicalProcessors, ThreadCount, MaxClockSpeed, CurrentClockSpeed, ExtClock, L2CacheSize, L3CacheSize, DataWidth, AddressWidth, Characteristics, VirtualizationFirmwareEnabled, SecondLevelAddressTranslationExtensions }
-        $r.firmwareType = Part { (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name PEFirmwareType).PEFirmwareType }
         $r.secureBoot = Part { Confirm-SecureBootUEFI }
         $r.physicalDisks = Part { Get-PhysicalDisk | Select-Object DeviceId, FriendlyName, Manufacturer, Model, BusType, MediaType, Size, AllocatedSize, FirmwareVersion, PhysicalSectorSize, LogicalSectorSize, SpindleSpeed, HealthStatus, OperationalStatus, Usage }
         $r.disks = Part { Get-Disk | Select-Object Number, FriendlyName, Manufacturer, Model, BusType, PartitionStyle, Size, AllocatedSize, LogicalSectorSize, PhysicalSectorSize, NumberOfPartitions, IsBoot, IsSystem, BootFromDisk, FirmwareVersion, HealthStatus, OperationalStatus }
         $r.battery = Part { Get-CimInstance Win32_Battery | Select-Object Name, Description, Chemistry, DesignVoltage, DesignCapacity, FullChargeCapacity, BatteryStatus, EstimatedChargeRemaining, Availability, PowerManagementSupported }
+        $r.portableBattery = Part { Get-CimInstance Win32_PortableBattery | Select-Object Name, Manufacturer, ManufactureDate, Chemistry, DesignCapacity, DesignVoltage, ExpectedBatteryLife, MaxRechargeTime, SmartBatteryVersion, Location, BatteryStatus }
         $r.batteryStatic = Part { Get-CimInstance -Namespace root/wmi -ClassName BatteryStaticData | Select-Object DeviceName, ManufactureName, ManufactureDate, Chemistry, DesignedCapacity, DefaultAlert1, DefaultAlert2, CriticalBias, Capabilities, Granularity1, Granularity2 }
         $r.batteryFullChargedCapacity = Part { Get-CimInstance -Namespace root/wmi -ClassName BatteryFullChargedCapacity | Select-Object FullChargedCapacity }
         $r.batteryCycleCount = Part { Get-CimInstance -Namespace root/wmi -ClassName BatteryCycleCount | Select-Object CycleCount }
