@@ -89,7 +89,9 @@
     </Border>
 
     <!-- Current step -->
-    <ScrollViewer Grid.Column="1" Padding="36,28,36,8">
+    <!-- The scrollbar stays visible when a step runs past the window, so a
+         button or result below the fold is not mistaken for a missing one. -->
+    <ScrollViewer x:Name="Page" Grid.Column="1" Padding="36,28,36,24" AllowAutoHide="False">
       <StackPanel Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
         <TextBlock Text="{Binding StepTitle}" Classes="h1" />
 
@@ -141,6 +143,7 @@
         <!-- Hardware report -->
         <StackPanel Classes="step" IsVisible="{Binding IsCollectStep}">
           <TextBlock Classes="body" Text="Linux runs on Arm laptops through a device tree: a description of the hardware, written by hand for each model. Writing one takes what this computer's firmware and Windows know about it. This reads that and saves it as one zip file." />
+          <Button Classes="primary" Content="Collect the report" Click="Collect" IsVisible="{Binding CanCollect}" HorizontalAlignment="Left" />
           <Border Classes="panel">
             <StackPanel Spacing="4">
               <TextBlock Text="What the report holds" FontWeight="Bold" />
@@ -149,7 +152,6 @@
               <TextBlock Classes="dim body" Text="Serial numbers, the system UUID, the Windows product key, MAC addresses, the computer and user names, paired Bluetooth devices, printers and drives, and registry values named as identifiers. You can look inside the zip before you send it." />
             </StackPanel>
           </Border>
-          <Button Classes="primary" Content="Collect the report" Click="Collect" IsVisible="{Binding CanCollect}" HorizontalAlignment="Left" />
           <ItemsControl ItemsSource="{Binding ReportLog}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="local:LogLine">
