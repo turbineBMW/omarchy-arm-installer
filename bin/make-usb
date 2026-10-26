@@ -2,14 +2,12 @@
 # Write the installer to a USB stick from Linux and fill its OMARCHY_FW
 # partition, as the Windows app does.
 #
-#   sudo bin/make-usb ISO DEVICE [--firmware FILEREPOSITORY] [--recipe ID]
+#   sudo bin/make-usb ISO DEVICE [--firmware FILEREPOSITORY]
 #
 # FILEREPOSITORY is a Windows DriverStore/FileRepository directory, such as
 # "/run/media/$USER/Local Disk/Windows/System32/DriverStore/FileRepository";
-# ID is a folder in recipes/. bin/fill-stick says what each copies; with a
-# recipe it also fetches the official packages the image lacks (needs
-# unsquashfs to read the image's package list). Without
-# --firmware the installer reads the Windows partition instead.
+# bin/fill-stick says what it copies. Without --firmware the installer reads
+# the Windows partition instead.
 #
 # Everything on DEVICE is erased. It must be a removable USB disk, and the
 # device name has to be typed back to confirm.
@@ -23,13 +21,12 @@ die() { printf 'make-usb: %s\n' "$*" >&2; exit 1; }
 
 iso=${1:-}
 device=${2:-}
-[[ -f $iso && -b $device ]] || die "usage: sudo bin/make-usb ISO DEVICE [--firmware FILEREPOSITORY] [--recipe ID]"
+[[ -f $iso && -b $device ]] || die "usage: sudo bin/make-usb ISO DEVICE [--firmware FILEREPOSITORY]"
 shift 2
 fill=()
 while (($#)); do
   case $1 in
     --firmware) [[ -d ${2:-} ]] || die "no directory ${2:-}"; fill+=(--firmware "$2"); shift 2 ;;
-    --recipe) [[ -f $root/recipes/${2:-}/recipe.json ]] || die "no recipe ${2:-} in recipes/"; fill+=(--recipe "$2"); shift 2 ;;
     *) die "unknown option $1" ;;
   esac
 done
@@ -79,14 +76,6 @@ if ((${#fill[@]})); then
   mnt=$(mktemp -d)
   mount "$part" "$mnt"
   trap 'umount "$mnt"; rmdir "$mnt"' EXIT
-  # With a recipe, fill-stick also fetches the official packages the image
-  # lacks; the image's own package list says which.
-  if [[ " ${fill[*]} " == *" --recipe "* ]]; then
-    offline_db=$(mktemp)
-    trap 'umount "$mnt"; rmdir "$mnt"; rm -f "$offline_db"' EXIT
-    "$root/bin/iso-offline-db" "$iso" "$offline_db"
-    fill+=(--offline-db "$offline_db")
-  fi
   python3 "$root/bin/fill-stick" "$mnt" "${fill[@]}"
   du -sh "$mnt"
 fi

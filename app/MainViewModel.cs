@@ -23,14 +23,13 @@ public sealed record LogLine(string Text, bool Ok);
 
 public sealed class MainViewModel : INotifyPropertyChanged
 {
-    public enum Steps { Start, Machine, Firmware, Extras, Installer, Stick, Windows, Create, Done, Collect, Share }
+    public enum Steps { Start, Machine, Firmware, Installer, Stick, Windows, Create, Done, Collect, Share }
 
     static readonly Dictionary<Steps, string> Titles = new()
     {
         [Steps.Start] = "What would you like to do?",
         [Steps.Machine] = "This computer",
         [Steps.Firmware] = "Firmware",
-        [Steps.Extras] = "Extras",
         [Steps.Installer] = "Installer",
         [Steps.Stick] = "USB stick",
         [Steps.Windows] = "Windows",
@@ -42,8 +41,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     /// The two things the tool does, each its own run of steps.
     static readonly Steps[] InstallFlow = [Steps.Machine, Steps.Firmware, Steps.Installer, Steps.Stick, Steps.Windows, Steps.Create, Steps.Done];
-    /// With a recipe for this model, its extras get a step of their own.
-    static readonly Steps[] RecipeFlow = [Steps.Machine, Steps.Firmware, Steps.Extras, Steps.Installer, Steps.Stick, Steps.Windows, Steps.Create, Steps.Done];
     static readonly Steps[] ReportFlow = [Steps.Collect, Steps.Share];
 
     readonly IPlatform platform;
@@ -85,7 +82,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool IsStartStep => Current == Steps.Start;
     public bool IsMachineStep => Current == Steps.Machine;
     public bool IsFirmwareStep => Current == Steps.Firmware;
-    public bool IsExtrasStep => Current == Steps.Extras;
     public bool IsInstallerStep => Current == Steps.Installer;
     public bool IsStickStep => Current == Steps.Stick;
     public bool IsWindowsStep => Current == Steps.Windows;
@@ -109,8 +105,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         Steps.Machine => MachineOk,
         Steps.Firmware => FirmwareOk && FirmwareSize <= StickRoom,
-        Steps.Extras => !UseRecipe || !StickTooSmall,
-        Steps.Installer => ImagePath is not null && (!UseRecipe || (imageFromRelease && official is not null)),
+        Steps.Installer => ImagePath is not null,
         Steps.Stick => SelectedDisk is not null,
         Steps.Windows => (!BitLocker.On || KeySaved) && !(KeepWindows && DiskFreeLow),
         Steps.Collect => Report is not null,
@@ -158,8 +153,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     /// The list a laptop is recognised from goes stale with the installer.
     public string ModelsNote =>
-        $"This installer ({Log.Version}) recognises the {Recipes.Models.Count} models in systemd's list when it was released, " +
-        $"and the {Recipes.All.Count} with a recipe. A newer release may know more: github.com/{ImageSource.Repository}/releases.";
+        $"This installer ({Log.Version}) recognises the {Models.All.Count} models in systemd's list when it was released. " +
+        $"A newer release may know more: github.com/{ImageSource.Repository}/releases.";
 
     public async Task DetectAsync()
     {
@@ -170,7 +165,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             machine ??= await Task.Run(platform.GetMachine, ct);
             if (!machine.IsArm64) { Detected = Detection.NotArm; return; }
             await ReadMachineAsync(ct);
-            Detected = Model is not null || Recipe is not null ? Detection.Known : Detection.NoDeviceTree;
+            Detected = Model is not null ? Detection.Known : Detection.NoDeviceTree;
         });
         if (HasError) Detected = Detection.Failed;
         Log.Info($"Start: {Detected}");
@@ -186,19 +181,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string MachineName { get; private set; } = "";
     public string MachineNote { get; private set; } = "";
     public bool HasMachineNote => MachineNote.Length > 0;
-    /// A recipe matched this model: said on its own line, with its icon.
-    public bool HasRecipeNote { get; private set; }
-    public string RecipeNoteDetail => Recipe is { IsTested: false } ? "It has not been tested on this model yet." : "";
-    public bool HasRecipeNoteDetail => RecipeNoteDetail.Length > 0;
 
     MachineInfo? machine;
     CollectedHardware? hardware;
-    public Recipe? Recipe { get; private set; }
     public KnownModel? Model { get; private set; }
 
     /// Reads the computer once: SMBIOS, displays and devices, and from those
-    /// the CHIDs that say whether Linux has a device tree for it and whether a
-    /// recipe matches. The start screen does this; the steps reuse it.
+    /// the CHIDs that say whether Linux has a device tree for it. The start
+    /// screen does this; the steps reuse it.
     async Task ReadMachineAsync(CancellationToken ct)
     {
         machine ??= await Task.Run(platform.GetMachine, ct);
@@ -208,20 +198,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var identity = hardware.Smbios is { Length: > 0 } table ? Smbios.Identity(Smbios.Parse(table)) : null;
         var panel = hardware.Displays.OrderByDescending(d => d.Internal).Select(d => Edid.PanelId(d.Edid)).FirstOrDefault();
         var chids = identity is null ? [] : Chid.Calculate(identity, panel).Select(c => c.Value).ToList();
-        Recipe = Recipes.For(chids);
-        Model = Recipes.ModelFor(chids);
+        Model = Models.For(chids);
         MachineName = identity is null ? m.Model
             : string.Join(" ", new[] { identity.Manufacturer, identity.ProductName }.Where(x => !string.IsNullOrWhiteSpace(x)))
               + (identity.Sku is { } sku ? $"  ·  {sku}" : "");
         Log.Info($"Machine: {MachineName}, arm64 {m.IsArm64}, administrator {m.IsAdministrator}, " +
-                 $"device tree {Model?.Compatible ?? "none"}, recipe {Recipe?.Id ?? "none"}, CHIDs {string.Join(" ", chids)}");
+                 $"device tree {Model?.Compatible ?? "none"}, CHIDs {string.Join(" ", chids)}");
     }
 
     public async Task CheckMachineAsync()
     {
         MachineChecks.Clear();
         MachineNote = "";
-        HasRecipeNote = false;
         MachineUnsupported = false;
         await RunAsync(async ct =>
         {
@@ -232,21 +220,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
             MachineChecks.Add(new Check("Windows on Arm", m.IsArm64));
             MachineChecks.Add(new Check("Running as administrator", m.IsAdministrator,
                 m.IsAdministrator ? "" : "Right-click the installer and choose Run as administrator"));
-            var supported = Model is not null || Recipe is not null;
+            var supported = Model is not null;
             MachineChecks.Add(new Check("Linux knows this model", supported,
-                supported ? $"Device tree {Model?.Compatible ?? Recipe!.Device}" : "No device tree for it yet"));
+                supported ? $"Device tree {Model!.Compatible}" : "No device tree for it yet"));
             MachineUnsupported = !supported;
 
             MachineNote = !supported
                 ? "Omarchy cannot start on this model yet: Linux needs a device tree for it, written by hand. " +
                   "Share a hardware report, and the people who write them have what they need."
-                : Recipe is not null ? ""
-                    : "Omarchy installs as it comes, with this computer's firmware. Not every part may work yet.";
-            HasRecipeNote = supported && Recipe is not null;
-            flow = Recipe is null ? InstallFlow : RecipeFlow;
-            UseRecipe = Recipe is not null;
+                : "Omarchy installs as it comes, with this computer's firmware. Not every part may work yet.";
         });
-        Current = Current; // the steps may have changed
     }
 
     public async Task SwitchToReportAsync() => await StartAsync(report: true);
@@ -265,7 +248,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void FindFirmware()
     {
         Firmware.Clear();
-        foreach (var p in FirmwareCollector.Find(platform.DriverStore, hardware?.Devices ?? [], Recipe))
+        foreach (var p in FirmwareCollector.Find(platform.DriverStore, hardware?.Devices ?? []))
         {
             Firmware.Add(p);
             Log.Info($"Firmware {p.Folder} ({p.Label}): {(p.Complete ? "complete" : "INCOMPLETE")}, " +
@@ -275,117 +258,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         ChangedAll();
     }
 
-    // ---------- Extras ----------
-
-    bool useRecipe;
-    /// Only a verified, still-active repository can be chosen.
-    public bool UseRecipe { get => useRecipe && CanUseRecipe; set { useRecipe = value; ChangedAll(); } }
-    public bool CanUseRecipe => verified is not null && !verified.Description.IsRetired;
-    VerifiedRepo? verified;
-    public RecipeInfo? RecipeInfo => verified?.Description;
-    public List<RepoPackage>? RecipePackages => verified?.Packages;
-    public string RecipeProblem { get; private set; } = "";
-    public bool HasRecipeProblem => RecipeProblem.Length > 0;
-    public bool RecipeLoading => Recipe is not null && verified is null && !HasRecipeProblem;
-    public long RecipeSize => UseRecipe ? (RecipePackages?.Sum(p => p.Size) ?? 0) + (official?.Sum(p => p.Package.Size) ?? 0) : 0;
-
-    /// Omarchy's and Arch's packages the extras need that the installer image
-    /// does not carry; known once both the repository and the image are.
-    List<OfficialPackage>? official;
-    bool imageFromRelease;
-    public string OfficialProblem { get; private set; } = "";
-    public bool HasOfficialProblem => OfficialProblem.Length > 0;
-    public bool ShowOfficialProblem => HasOfficialProblem && UseRecipe;
-    public bool OfficialLoading { get; private set; }
-    public bool HasOfficial => official is not null && UseRecipe;
-    public string OfficialText => official is null ? "" : official.Count == 0
-        ? "The installer image has everything the extras depend on."
-        : $"The extras also need {official.Count} of Omarchy's and Arch Linux ARM's own packages that the installer image does not carry " +
-          $"({official.Sum(p => p.Package.Size) / 1e6:0.0} MB): {string.Join(", ", official.Select(p => p.Package.Name))}. " +
-          "They go on the stick too, with their own signatures, which Omarchy checks with its keyring.";
-
-    /// The Extras page's first list: Omarchy's and Arch Linux ARM's own
-    /// packages the recipe adds because the installer image lacks them.
-    public IReadOnlyList<OfficialItem> OfficialItems => official?
-        .OrderBy(p => p.Package.Name, StringComparer.Ordinal)
-        .Select(p => new OfficialItem(p.Package.Name, $"{p.Repo.Name}  ·  {p.Package.Version}  ·  {Size(p.Package.Size)}"))
-        .ToList() ?? [];
-    public bool HasOfficialItems => official is { Count: > 0 };
-    public string OfficialStatus =>
-        OfficialLoading ? "Working out which of Omarchy's packages the recipe needs…"
-        : HasOfficialProblem ? ""
-        : official is null ? "Listed once the installer image is known, at the Installer step."
-        : official.Count == 0 ? "None: the installer image already has everything the recipe needs from Omarchy."
-        : $"Packages Omarchy already publishes, which the installer image does not carry. They come from Omarchy's and Arch Linux ARM's " +
-          $"own repositories with their own signatures, and Omarchy checks them with its keyring ({official.Count} packages, {Size(official.Sum(p => p.Package.Size))}).";
-    public bool HasOfficialStatus => OfficialStatus.Length > 0;
-
-    /// The Extras page's second list: what comes from outside Omarchy, by
-    /// the repository it comes from, each with a link to it.
-    public IReadOnlyList<OutsideRepo> OutsideRepos => Recipe is null || RecipeInfo is not { } info ? [] :
-    [
-        new OutsideRepo(
-            Recipe.Repo.Name,
-            info.Summary,
-            $"Maintained by {(info.Maintainer ?? Recipe.Maintainer).Name}  ·  signed with key " +
-                string.Join(" ", Recipe.Repo.KeyFingerprint.Chunk(4).Select(c => new string(c))),
-            Link(info.Homepage) ?? Link(Recipe.Repo.ServerFor(PacmanRepo.Arch)),
-            info.Packages.Select(p => new OutsidePackage(p.Name, p.Replaces, p.Description, Link(p.Upstream))).ToList(),
-            RecipePackages is { } packages ? $"{packages.Count} packages, {Size(packages.Sum(p => p.Size))}" : ""),
-    ];
-    public string OutsideNote
-    {
-        get
-        {
-            var replaced = RecipeInfoPackages.Where(p => p.Replaces).Select(p => p.Name).ToList();
-            return (replaced.Count > 0 ? $"They replace Omarchy's own {string.Join(", ", replaced)}. " : "") +
-                   "They keep updating from their repository until you remove them with omarchy-recipe remove in a terminal; " +
-                   "when the maintainer retires it, once Omarchy has the same, Omarchy's updates say so.";
-        }
-    }
-
-    static Uri? Link(string? url) => Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps ? uri : null;
-    static string Size(long bytes) => bytes >= 1_000_000 ? $"{bytes / 1e6:0.0} MB" : $"{Math.Max(1, bytes / 1000)} kB";
-
-    public string RecipeTitle => RecipeInfo?.Name ?? Recipe?.Name ?? "";
-    public string RecipeSummary => RecipeInfo?.Summary ?? "";
-    public IReadOnlyList<RecipeInfoPackage> RecipeInfoPackages => RecipeInfo?.Packages ?? [];
-    public bool RecipeRetired => RecipeInfo?.IsRetired == true;
-    public string RecipeRetiredText => RecipeInfo is { IsRetired: true } info
-        ? $"Its maintainer has retired this repository: {info.RetiredMessage ?? "Omarchy has everything it carried."} Install Omarchy as it comes."
-        : "";
-
-    public string RecipeDownload => !UseRecipe || RecipePackages is null ? "" :
-        $"On the stick: {RecipePackages.Count} packages from outside Omarchy ({Size(RecipePackages.Sum(p => p.Size))})" +
-        (official is { Count: > 0 } ? $" and {official.Count} of Omarchy's ({Size(official.Sum(p => p.Package.Size))})" : "") + ".";
-    public bool StickTooSmall => FirmwareSize + RecipeSize > StickRoom;
-
-    public async Task LoadRecipeAsync()
-    {
-        if (Recipe is null || verified is not null) return;
-        RecipeProblem = "";
-        ChangedAll();
-        try
-        {
-            verified = await PacmanRepo.ReadAsync(Recipe, CancellationToken.None);
-            Log.Info($"Recipe {Recipe.Id}: verified, {verified.Description.Status}, " +
-                     string.Join(", ", verified.Packages.Select(p => $"{p.FileName} ({p.Size})")));
-            official = null;
-        }
-        catch (Exception e)
-        {
-            Log.Error($"reading the {Recipe.Repo.Name} repository", e);
-            RecipeProblem = e is InvalidDataException ? e.Message
-                : $"Could not reach the extras' repository ({e.Message}). Leave them out, or go Back and try again.";
-        }
-        ChangedAll();
-    }
-
     // ---------- Next steps ----------
 
-    public string SecureBootText => Recipe?.SecureBoot ??
+    public string SecureBootText =>
         "Turn Secure Boot off in this computer's firmware settings (often F2 or Del as it starts, or Windows' Advanced startup > UEFI Firmware Settings).";
-    public string BootFromUsbText => Recipe?.BootFromUsb ??
+    public string BootFromUsbText =>
         "Start from the stick: choose it in the firmware's boot menu (often F12 as it starts), or put it first in the boot order.";
 
     // ---------- Installer ----------
@@ -408,7 +285,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             release = await ImageSource.FindLatestAsync(CancellationToken.None);
             if (release is null) Error = "No installer has been published yet. Choose an ISO file instead.";
-            else await ResolveOfficialAsync();
         }
         catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -432,7 +308,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ProgressText = "Downloading and checking the installer";
             await ImageSource.DownloadAsync(release, path, new Progress<double>(p => Progress = p), ct);
             ImagePath = path;
-            imageFromRelease = true;
         });
     }
 
@@ -440,63 +315,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         Log.Info($"Image: {path} ({new FileInfo(path).Length} bytes)");
         ImagePath = path;
-        imageFromRelease = false;
         Error = null;
-        if (UseRecipe)
-            OfficialProblem = "With an ISO file of your own, this tool cannot tell what the image carries, so the extras' other " +
-                              "dependencies cannot be put on the stick and the install would fail. Download the installer above, or leave the extras out.";
         ChangedAll();
-    }
-
-    /// Works out which official packages the stick must carry for the extras:
-    /// what the recipe's packages depend on that the image's offline mirror
-    /// (its published package list) and the recipe's repository lack.
-    public async Task ResolveOfficialAsync()
-    {
-        official = null;
-        OfficialProblem = "";
-        if (Recipe is null || verified is null || release is null) { ChangedAll(); return; }
-        if (release.OfflineDbUrl is null)
-        {
-            OfficialProblem = "This installer release does not say which packages it carries, so the extras cannot be completed " +
-                              "offline. Leave the extras out, or wait for a newer installer.";
-            ChangedAll();
-            return;
-        }
-        OfficialLoading = true;
-        ChangedAll();
-        try
-        {
-            var ct = CancellationToken.None;
-            var offline = await OfficialPackages.FetchOfflineDatabaseAsync(release.OfflineDbUrl, ct);
-            var dbs = await OfficialPackages.FetchDatabasesAsync(ct);
-            var wanted = Recipe.Packages.Concat(verified.Description.Official);
-            official = OfficialPackages.Resolve(wanted, verified.Packages, offline, dbs);
-            Log.Info($"Official packages for {Recipe.Id} beyond {release.IsoName}: " +
-                     (official.Count == 0 ? "none" : string.Join(", ", official.Select(p => $"{p.Repo.Name}/{p.Package.FileName} ({p.Package.Size})"))));
-        }
-        catch (Exception e)
-        {
-            Log.Error("working out the extras' official packages", e);
-            OfficialProblem = e is InvalidDataException ? e.Message
-                : $"Could not read the package repositories ({e.Message}). Leave the extras out, or go Back and try again.";
-        }
-        OfficialLoading = false;
-        ChangedAll();
-    }
-
-    /// At the Extras step: the published installer, looked up quietly (the
-    /// Installer step says so if there is none), and the official packages
-    /// the recipe needs beyond it, so the page can list them.
-    async Task PrepareOfficialAsync()
-    {
-        if (verified is null) return;
-        if (release is null && !releaseChecked)
-        {
-            try { release = await ImageSource.FindLatestAsync(CancellationToken.None); }
-            catch (Exception e) { Log.Info($"Release lookup at the Extras step: {e.Message}"); }
-        }
-        if (release is not null && official is null && !HasOfficialProblem && !OfficialLoading) await ResolveOfficialAsync();
     }
 
     // ---------- USB stick ----------
@@ -597,8 +417,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public ObservableCollection<LogLine> CreateLog { get; } = [];
     public string Summary => SelectedDisk is null ? "" :
-        $"Erase {SelectedDisk.Description} and write {Path.GetFileName(ImagePath)} to it, with this computer's firmware" +
-        (UseRecipe && Recipe is not null ? $" and the {Recipe.Name}" : "") + ".\n" +
+        $"Erase {SelectedDisk.Description} and write {Path.GetFileName(ImagePath)} to it, with this computer's firmware.\n" +
         Plan switch
         {
             WindowsPlan.Keep => $"Leave Windows as it is; Omarchy installs into the {(Partition?.DiskFree ?? 0) / 1e9:0} GB of unallocated space next to it.",
@@ -632,31 +451,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         CreateLog.Clear();
         await RunAsync(async ct =>
         {
-            Log.Info($"Creating: disk {disk.Number} ({disk.Model}, {disk.Size} bytes), image {image}, plan {Plan}, BitLocker {(BitLocker.On ? "on" : "off")}, recipe {(UseRecipe ? Recipe?.Id : "none")}");
-            // Download first: a failed download must not leave a half-made stick.
-            var recipe = UseRecipe ? Recipe : null;
-            var recipeFolder = recipe is null ? null : Path.Combine(platform.DownloadFolder, "omarchy-recipes", recipe.Id);
-            if (recipe is not null)
-            {
-                if (verified is null) throw new InvalidOperationException("The extras' repository was not read; go Back to Extras.");
-                Note($"Downloading the {recipe.Name}");
-                ProgressText = "Downloading and checking the extras";
-                await PacmanRepo.DownloadAsync(recipe, verified, Path.Combine(recipeFolder!, "repo"),
-                    new Progress<double>(p => Progress = p), ct);
-                Done($"{recipe.Name} downloaded and checked");
-                if (official is null) throw new InvalidOperationException("The extras' other dependencies were not worked out; go Back to Installer.");
-                // Only this run's set goes on the stick: a stale file from an
-                // earlier run would be installed too.
-                var officialFolder = Path.Combine(recipeFolder!, "official");
-                if (Directory.Exists(officialFolder)) Directory.Delete(officialFolder, recursive: true);
-                if (official.Count > 0)
-                {
-                    Note($"Downloading {official.Count} of Omarchy's and Arch's packages the installer image lacks");
-                    ProgressText = "Downloading and checking the official packages";
-                    await OfficialPackages.DownloadAsync(official, officialFolder, new Progress<double>(p => Progress = p), ct);
-                    Done($"{official.Count} official packages downloaded and checked");
-                }
-            }
+            Log.Info($"Creating: disk {disk.Number} ({disk.Model}, {disk.Size} bytes), image {image}, plan {Plan}, BitLocker {(BitLocker.On ? "on" : "off")}");
             if (WindowsStays && BitLocker.On)
             {
                 Note("Pausing BitLocker for 3 starts");
@@ -674,36 +469,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
             await Task.Run(() => FirmwareCollector.CopyTo(Firmware, volume), ct);
             Done($"{Firmware.Sum(p => p.Found.Count)} firmware files copied to {volume}");
 
-            if (recipe is not null)
-            {
-                Note($"Copying the {recipe.Name} onto the stick");
-                await Task.Run(() => CopyRecipe(recipe, verified!, recipeFolder!, Path.Combine(volume, "recipe")), ct);
-                Done($"{recipe.Name} copied; the installer adds them");
-            }
-
             await platform.EjectAsync(disk, ct);
             Done("The stick is ready");
         });
         if (!HasError) Current = Steps.Done;
-    }
-
-    /// The stick's recipe folder, as the installer reads it: recipe.json,
-    /// key.asc, the repository's signed description, the repository in repo/,
-    /// and in official/ the official packages the image lacks.
-    static void CopyRecipe(Recipe recipe, VerifiedRepo verified, string downloaded, string destination)
-    {
-        Directory.CreateDirectory(Path.Combine(destination, "repo"));
-        File.WriteAllText(Path.Combine(destination, "recipe.json"), recipe.Json);
-        File.WriteAllText(Path.Combine(destination, "key.asc"), recipe.Key);
-        File.WriteAllBytes(Path.Combine(destination, "info.json"), verified.Info);
-        File.WriteAllBytes(Path.Combine(destination, "info.json.sig"), verified.InfoSignature);
-        foreach (var file in Directory.EnumerateFiles(Path.Combine(downloaded, "repo")))
-            File.Copy(file, Path.Combine(destination, "repo", Path.GetFileName(file)), overwrite: true);
-        var official = Path.Combine(downloaded, "official");
-        if (!Directory.Exists(official)) return;
-        Directory.CreateDirectory(Path.Combine(destination, "official"));
-        foreach (var file in Directory.EnumerateFiles(official))
-            File.Copy(file, Path.Combine(destination, "official", Path.GetFileName(file)), overwrite: true);
     }
 
     void Note(string text) => Lines.Add(new LogLine(text, false));
@@ -903,29 +672,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             case Steps.Machine: await CheckMachineAsync(); break;
             case Steps.Firmware: FindFirmware(); break;
-            case Steps.Extras: await LoadRecipeAsync(); await PrepareOfficialAsync(); break;
-            case Steps.Installer:
-                if (release is null) await FindReleaseAsync();
-                else if (UseRecipe && official is null && !HasOfficialProblem && !OfficialLoading) await ResolveOfficialAsync();
-                break;
+            case Steps.Installer: if (release is null) await FindReleaseAsync(); break;
             case Steps.Stick: await ListDisksAsync(); break;
             case Steps.Windows: await CheckWindowsAsync(); break;
         }
     }
-}
-
-/// One of Omarchy's or Arch Linux ARM's packages a recipe adds.
-public sealed record OfficialItem(string Name, string Detail);
-
-/// A package from outside Omarchy, with where its fix is headed.
-public sealed record OutsidePackage(string Name, bool Replaces, string Description, Uri? Upstream)
-{
-    public bool HasUpstream => Upstream is not null;
-}
-
-/// A repository outside Omarchy that a recipe takes packages from.
-public sealed record OutsideRepo(string Name, string Summary, string Source, Uri? Link, IReadOnlyList<OutsidePackage> Packages, string Size)
-{
-    public bool HasLink => Link is not null;
-    public bool HasSummary => Summary.Length > 0;
 }

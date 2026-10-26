@@ -1,7 +1,7 @@
-From 708465479a631012d4e5d9a66928aaa39e0ba917 Mon Sep 17 00:00:00 2001
+From acd2ea8e6cc2a7929364842208143d9826a508b3 Mon Sep 17 00:00:00 2001
 From: Brandon Williams <turbine.bmw@gmail.com>
 Date: Sat, 24 Oct 2026 11:43:13 -0400
-Subject: [PATCH 1/4] Read Qualcomm firmware from an OMARCHY_FW partition on
+Subject: [PATCH 1/2] Read Qualcomm firmware from an OMARCHY_FW partition on
  the install media
 
 A USB creator running in Windows can copy the firmware out of the unlocked
@@ -213,6 +213,3 @@ index 0000000..0e8fc27
 +
 +if __name__ == "__main__":
 +    unittest.main()
--- 
-2.56.0
-
