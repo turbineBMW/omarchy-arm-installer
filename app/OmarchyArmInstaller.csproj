@@ -26,17 +26,12 @@
     <PackageReference Include="Avalonia" Version="11.3.22" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.22" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.22" />
-    <!-- OpenPGP signatures on recipe repositories. -->
-    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
-    <!-- Omarchy's package databases are zstd-compressed; .NET has no zstd. -->
-    <PackageReference Include="ZstdSharp.Port" Version="0.8.6" />
   </ItemGroup>
 
   <ItemGroup>
     <AvaloniaResource Include="Assets\Fonts\**" />
     <AvaloniaResource Include="Assets\omarchy.png" />
-    <!-- Device recipes and the models systemd-stub knows, read at run time. -->
-    <EmbeddedResource Include="..\recipes\**\recipe.json;..\recipes\**\key.asc" LogicalName="recipes/%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- The models systemd-stub knows, read at run time. -->
     <EmbeddedResource Include="Assets\models.json" LogicalName="models.json" />
   </ItemGroup>
 

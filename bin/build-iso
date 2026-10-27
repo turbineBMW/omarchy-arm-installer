@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the installer image: Omarchy's aarch64 ISO with this repository's
-# patches, which read firmware and a device recipe from the stick's
-# OMARCHY_FW partition. Nothing device-specific is built in.
+# patches, which read firmware from the stick's OMARCHY_FW partition.
+# Nothing device-specific is built in.
 #
 #   bin/build-iso
 #

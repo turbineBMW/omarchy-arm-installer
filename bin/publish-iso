@@ -25,17 +25,11 @@ echo "==> Checksum"
 (cd "$(dirname "$iso")" && sha256sum "$(basename "$iso")") | awk -v n="$name" '{ print $1 "  " n }' >"$work/$name.sha256"
 cat "$work/$name.sha256"
 
-# What the image installs without the network, so the USB creators can tell
-# which of a recipe's dependencies the stick has to carry.
-echo "==> Offline mirror database"
-"$root/bin/iso-offline-db" "$iso" "$work/${name%.iso}.offline.db"
-ls -la "$work/${name%.iso}.offline.db"
-
 echo "==> Splitting into parts"
 split --bytes=1900M "$iso" "$work/$name.part-"
 ls -la "$work"
 
-assets=("$work/$name.sha256" "$work/${name%.iso}.offline.db" "$work/$name".part-*)
+assets=("$work/$name.sha256" "$work/$name".part-*)
 [[ -z $app ]] || assets+=("$app")
 
 echo "==> Release $tag on $repo"
@@ -43,5 +37,5 @@ flags=()
 [[ ${PRERELEASE:-} != 1 ]] || flags=(--prerelease)
 gh release view "$tag" -R "$repo" >/dev/null 2>&1 ||
   gh release create "$tag" -R "$repo" "${flags[@]}" --title "Installer $date${PRERELEASE:+ (untested)}" --notes \
-"The Omarchy installer for Arm laptops, $date. Run OmarchyArmInstaller.exe in the laptop's Windows: it downloads these parts, joins and checks them, and puts the laptop's firmware and any device recipe on the stick. From Linux: cat the parts in order into $name, check it against $name.sha256, then bin/make-usb."
+"The Omarchy installer for Arm laptops, $date. Run OmarchyArmInstaller.exe in the laptop's Windows: it downloads these parts, joins and checks them, and puts the laptop's firmware on the stick. From Linux: cat the parts in order into $name, check it against $name.sha256, then bin/make-usb."
 gh release upload "$tag" -R "$repo" --clobber "${assets[@]}"
