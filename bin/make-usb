@@ -48,7 +48,7 @@ dd if="$iso" of="$device" bs=4M oflag=direct conv=fsync status=progress
 partprobe "$device"
 udevadm settle
 
-# Images from bin/build-iso carry an empty OMARCHY_FW partition; older ones
+# Images from omarchy-arm-images carry an empty OMARCHY_FW partition; older ones
 # get one appended in the free space.
 part=$(lsblk -lnpo NAME,LABEL "$device" | awk -v label="$label" '$2 == label { print $1; exit }')
 if [[ -z $part ]]; then

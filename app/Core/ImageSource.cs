@@ -11,12 +11,16 @@ public sealed record ReleasedImage(string Tag, string IsoName, IReadOnlyList<(st
     public long Size => Parts.Sum(p => p.Size);
 }
 
-/// Finds and downloads the installer from the repository's releases. GitHub
-/// limits a release asset to 2 GiB, so the ISO is published in .part-aa,
-/// .part-ab, ... pieces beside a .sha256 of the whole image.
+/// Finds and downloads the installer from the image repository's releases.
+/// GitHub limits a release asset to 2 GiB, so the ISO is published in
+/// .part-aa, .part-ab, ... pieces beside a .sha256 of the whole image.
 public static class ImageSource
 {
+    /// Where this app lives: its releases and issues.
     public const string Repository = "turbineBMW/omarchy-arm-installer";
+    /// Where the installer image is published, for this app and every model
+    /// installer made from omarchy-arm-installer-recipes.
+    public const string ImageRepository = "turbineBMW/omarchy-arm-images";
     const string TagPrefix = "installer-";
 
     static readonly HttpClient Http = CreateClient();
@@ -30,7 +34,7 @@ public static class ImageSource
 
     public static async Task<ReleasedImage?> FindLatestAsync(CancellationToken ct)
     {
-        using var response = await Http.GetAsync($"https://api.github.com/repos/{Repository}/releases?per_page=30", ct);
+        using var response = await Http.GetAsync($"https://api.github.com/repos/{ImageRepository}/releases?per_page=30", ct);
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         foreach (var release in document.RootElement.EnumerateArray())
