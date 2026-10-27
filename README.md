@@ -21,7 +21,7 @@ The installer computes the laptop's CHIDs, the hardware IDs systemd-stub picks a
 
 ## The stick
 
-The installer image is Omarchy's aarch64 ISO with two patches ([`iso/patches`](iso/patches)) that read a 1 GiB `OMARCHY_FW` partition on the stick:
+The installer image comes from [omarchy-arm-images](https://github.com/turbineBMW/omarchy-arm-images), which builds and publishes it for this installer and the model installers alike. It is Omarchy's aarch64 ISO with patches that read a 1 GiB `OMARCHY_FW` partition on the stick, where this installer puts the firmware:
 
 ```
 OMARCHY_FW/
@@ -34,8 +34,6 @@ The patches are meant for omarchy-iso itself; once they are there, the stick is 
 
 ```sh
 dotnet publish app -c Release -r win-arm64 --self-contained true -o out   # the Windows app
-bin/build-iso                                                             # the ISO
-bin/publish-iso ISO [out/OmarchyArmInstaller.exe]                         # a release the app finds (needs unsquashfs)
 sudo bin/make-usb ISO /dev/sdX --firmware .../FileRepository               # a stick from Linux
 ```
 
