@@ -7,6 +7,44 @@ Run `OmarchyArmInstaller.exe` in the laptop's Windows (as administrator). It rea
 - **Make an Omarchy USB stick**, when Linux has a device tree for the laptop. It recognises the laptop by its hardware IDs, copies the firmware Linux needs out of Windows' own drivers onto the stick, and writes the installer. BitLocker stays on: the firmware comes from the running Windows, not from its encrypted disk. Windows can stay next to Omarchy (you shrink C: in Disk Management, and the installer checks the room) or make way for it.
 - **Share a hardware report**, when it doesn't: the installer says so, and what a report does and doesn't buy. The report holds everything Windows and the firmware expose about the hardware: the ACPI and SMBIOS tables, hardware IDs, every device with all its properties, each device's and driver's registry settings and the resources drivers were given, the driver packages' INF files and a list of the firmware in them, and what Windows' tools say about storage, battery, power states, displays and the driver store, saved as a zip with serial numbers and other personal details taken out, and sent to [omarchy-hardware-reports](https://github.com/turbineBMW/omarchy-hardware-reports) through an issue form.
 
+## Making the stick
+
+**1. This computer.** The installer checks that it's on Windows on Arm and running as administrator, names the laptop, and says whether Linux has a device tree for it. If you'd rather share a hardware report, the button is here.
+
+![This computer](docs/screenshots/install-1-this-computer.png)
+
+**2. Firmware.** It lists the drivers whose firmware it will copy: graphics, sound, sensors, Wi-Fi, the battery gauge. The files go onto the stick and nowhere else.
+
+![Firmware](docs/screenshots/install-2-firmware.png)
+
+**3. Installer.** Download the Omarchy image, or choose an ISO you already have.
+
+![Installer](docs/screenshots/install-3-installer.png)
+
+**4. USB stick.** Pick a stick of 8 GB or more. Everything on it is erased.
+
+![USB stick](docs/screenshots/install-4-usb-stick.png)
+
+**5. Windows.** Keep Windows next to Omarchy, or let Omarchy's installer take the whole disk. To keep it, shrink C: in Disk Management (the steps are on screen) and choose Check again; Omarchy needs at least 20 GB of unallocated space.
+
+![Windows](docs/screenshots/install-5-windows.png)
+
+**6. Create.** The installer erases the stick and writes the image and the firmware to it. Next steps then says how to turn off Secure Boot, boot from the stick, and pick the free space or the whole disk in Omarchy's installer.
+
+![Create](docs/screenshots/install-6-create.png)
+
+## Sharing a hardware report
+
+**1. Hardware report.** The installer explains what a report holds and what it leaves out. Collect the report reads it all and saves one zip.
+
+![Hardware report](docs/screenshots/report-1-hardware-report.png)
+
+![Collecting the report](docs/screenshots/report-2-collecting.png)
+
+**2. Share it.** The zip is in Downloads, with a list of what was taken out of it. Open the form on GitHub (the model and its hardware IDs are filled in already), drag the zip in, add a link to the manufacturer's drivers if you know it, and submit.
+
+![Share it](docs/screenshots/report-3-share-it.png)
+
 ## How a laptop is recognised
 
 The installer computes the laptop's CHIDs, the hardware IDs systemd-stub picks a device tree by, from its SMBIOS table and panel EDID. Then:
