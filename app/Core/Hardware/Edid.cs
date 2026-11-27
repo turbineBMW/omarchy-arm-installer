@@ -8,7 +8,9 @@ public static class Edid
     public static bool IsValid(ReadOnlySpan<byte> edid) => edid.Length >= 128 && edid[..8].SequenceEqual(Header);
 
     /// The panel ID systemd's extra CHIDs use: the three-letter PNP vendor and
-    /// the product code as four upper-case hex digits, e.g. SDC4195.
+    /// the product code as four lower-case hex digits, e.g. LGD077b
+    /// (systemd src/fundamental/edid.c, edid_get_panel_id). In upper case the
+    /// three panel CHIDs come out as IDs no machine has at startup.
     public static string? PanelId(ReadOnlySpan<byte> edid)
     {
         if (!IsValid(edid)) return null;
@@ -16,7 +18,7 @@ public static class Edid
         var letters = new[] { (vendor >> 10) & 0x1F, (vendor >> 5) & 0x1F, vendor & 0x1F };
         if (letters.Any(l => l is < 1 or > 26)) return null;
         var product = edid[10] | (edid[11] << 8);
-        return string.Concat(letters.Select(l => (char)('A' + l - 1))) + product.ToString("X4");
+        return string.Concat(letters.Select(l => (char)('A' + l - 1))) + product.ToString("x4");
     }
 
     /// A copy without the panel's serial number (base block bytes 12-15 and
